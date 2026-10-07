@@ -334,6 +334,13 @@ async def run_agent(conversation_id: int) -> None:
         elif conv.ad_headline and agent.ad_context_enabled:
             context += f"\nEl cliente llegó desde el anuncio: «{conv.ad_headline}»."
         context += agent_config.stages_context(stages)
+        kb = None  # base de conocimiento con RAG: fragmentos citables para este mensaje (app/knowledge/retrieve.py)
+        if agent.use_knowledge:
+            from app.knowledge import retrieve
+
+            kb = await retrieve.for_agent(session, org, history, ai_agent_id=agent.id, conversation_id=conv.id)
+            if kb and kb.passages:
+                context += "\n\n" + kb.prompt_block(await retrieve.max_context_chars(session, org))
         req = AgentRequest(model="", system=await build_system(session, agent), context=context, turns=turns,
                            tools=tools)
 
@@ -360,6 +367,11 @@ async def run_agent(conversation_id: int) -> None:
         # Optimización de costos: los textos del bot seguidos (respuesta + aviso de transferencia, o dos respuestas a
         # ráfagas del cliente) salen como un solo mensaje facturable (app/bot_outbox.py)
         merge = bool(getattr(agent, "cost_optimization", False))
+        if result and result.text:
+            from app.knowledge import retrieve
+
+            # quita la línea [[fuentes: …]] antes de enviar y marca la consulta como respondida o no
+            result.text = await retrieve.finish(session, kb, result.text)
         if result and result.text:
             await set_actor(session, "bot")
             await bot_outbox.queue_text(session, conv, result.text, ai_agent_id=agent.id, merge=merge)

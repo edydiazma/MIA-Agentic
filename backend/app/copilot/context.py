@@ -4,6 +4,7 @@ Solo datos no sensibles del cliente (nunca documento, fecha de nacimiento ni dir
 Se arma una vez por evento y se reutiliza para sugerencias y siguiente acción en la misma llamada.
 """
 
+import logging
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
@@ -23,6 +24,8 @@ from app.models import (
     QuickReply,
 )
 from app.settings_store import get_setting
+
+log = logging.getLogger(__name__)
 
 SENDER = {"contact": "Cliente", "bot": "Bot", "agent": "Asesor", "campaign": "Campaña", "flow": "Flujo"}
 KB_CHARS = 6000
@@ -137,6 +140,20 @@ async def build(session: AsyncSession, conv: Conversation, agent: Agent | None =
         MemoryItem.organization_id == org, MemoryItem.status == "approved").order_by(MemoryItem.id).limit(30))).all()
     if memory:
         business += "\n" + "\n".join(f"- {m.title}: {m.content}" for m in memory)
+    if last_in and (last_in.text or last_in.transcript):  # fragmentos de la base de conocimiento con RAG
+        try:
+            from app.knowledge import retrieve
+
+            query = (last_in.text or last_in.transcript or "")[:1000]
+            if retrieve.is_question(query) and await retrieve.has_index(session, org):
+                async with session.begin_nested():
+                    kb = await retrieve.search(session, org, query, limit=4, conversation_id=conv.id,
+                                               ai_agent_id=ai_agent.id if ai_agent else None,
+                                               agent_id=agent.id if agent else None)
+                if kb.passages:
+                    business += "\n" + kb.prompt_block(3000, footer=False)
+        except Exception:  # noqa: BLE001 (el copiloto responde igual sin RAG)
+            log.warning("RAG del copiloto falló", exc_info=True)
 
     # Catálogo relacionado con lo último que dijo el cliente
     catalog_lines, has_catalog = [], False

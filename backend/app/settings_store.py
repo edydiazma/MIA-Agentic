@@ -110,6 +110,17 @@ DEFAULTS: dict[str, dict] = {
         "summary_cortex_id": None,
         "assistant_cortex_id": None,
     },
+    # Base de conocimiento con RAG (§21.2)
+    "knowledge": {
+        "enabled": True,
+        "embedding_connection_id": None,  # conexión de IA (voyage / openai) para embeddings; None = clave del servidor
+        "rerank_connection_id": None,  # conexión voyage para rerank (opcional)
+        "top_k": 6,  # fragmentos que recibe el agente por mensaje
+        "max_context_chars": 6000,  # presupuesto de texto recuperado en el prompt
+        "min_score": 0.012,  # por debajo (RRF) la consulta cuenta como sin respuesta → vacíos
+        "conversations_min_qa_score": 80,  # conversaciones resueltas que se aprenden como preguntas y respuestas
+        "gap_similarity": 0.85,  # coseno para agrupar preguntas sin respuesta en un mismo vacío
+    },
     "appointments": {
         "enabled": False,
         "title": "Cita",

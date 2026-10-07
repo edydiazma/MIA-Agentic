@@ -72,7 +72,7 @@ def load_handlers() -> None:
     """Importa los módulos que registran manejadores (idempotente)."""
     import importlib
 
-    for module in ("app.job_handlers",):
+    for module in ("app.job_handlers", "app.journeys.scheduler"):
         try:
             importlib.import_module(module)
         except ModuleNotFoundError as e:

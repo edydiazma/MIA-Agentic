@@ -11,6 +11,8 @@ export const NAV: NavEntry[] = [
   { label: "Clientes Bloqueados", icon: "⛔", href: "/clientes-bloqueados" },
   { label: "Negocios", icon: "💼", href: "/negocios" },
   { label: "Campañas", icon: "📣", href: "/campanas" },
+  { label: "Segmentos", icon: "🎯", href: "/segmentos", adminOnly: true },
+  { label: "Journeys", icon: "🧭", href: "/journeys", adminOnly: true },
   {
     label: "Automatizaciones",
     icon: "⚙️",
@@ -28,6 +30,7 @@ export const NAV: NavEntry[] = [
         items: [
           { label: "Agentes de IA", href: "/automatizaciones/cortex" },
           { label: "Conexiones y failover", href: "/automatizaciones/cortex/conexiones" },
+          { label: "Base de conocimiento", href: "/automatizaciones/cortex/conocimiento" },
           { label: "Memoria", href: "/automatizaciones/memoria" },
           { label: "Mejor vendedor", href: "/automatizaciones/mejor-vendedor" },
           { label: "Catálogo de productos", href: "/automatizaciones/catalogo" },
@@ -159,6 +162,8 @@ export const NAV: NavEntry[] = [
           { label: "Gestor de recursos", href: "/configuraciones/recursos" },
           { label: "Citas", href: "/configuraciones/citas" },
           { label: "Integraciones (CRM y Ads)", href: "/configuraciones/integraciones" },
+          { label: "Conectores propios", href: "/configuraciones/conectores" },
+          { label: "Exportación de datos", href: "/configuraciones/exportacion" },
           { label: "Atribución web", href: "/configuraciones/atribucion" },
           { label: "Mensajes disparadores", href: "/configuraciones/mensajes-disparadores" },
           { label: "Botón de WhatsApp", href: "/configuraciones/boton-whatsapp" },

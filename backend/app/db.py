@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncIterator
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -24,11 +24,24 @@ engine = create_async_engine(
 )
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
+
+def _set_search_path(dbapi_connection, _record) -> None:
+    """Las extensiones (pgvector, pg_trgm, citext) viven en el esquema `extensions` (Supabase): cada conexión las
+    ve sin depender de la configuración del rol ni del pooler (tipo vector en knowledge_chunks, §21.2)."""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("set search_path to public, extensions")
+    cursor.close()
+
+
+event.listen(engine.sync_engine, "connect", _set_search_path)
+
 # Reportes: réplica de lectura opcional (DATABASE_URL_REPORTS). Sin réplica = la principal. Los refrescos de
 # reporting.* (escrituras) siempre van a la principal; la réplica puede ir unos segundos atrás (§19.2).
 reports_engine = (create_async_engine(settings.database_url_reports, pool_size=settings.db_pool_size,
                                       max_overflow=settings.db_max_overflow, pool_pre_ping=True)
                   if settings.database_url_reports else engine)
+if reports_engine is not engine:
+    event.listen(reports_engine.sync_engine, "connect", _set_search_path)
 ReportsSessionLocal = async_sessionmaker(reports_engine, expire_on_commit=False)
 
 

@@ -27,6 +27,7 @@ os.environ.update(
     WA_ACCESS_TOKEN="test-token",
     ANTHROPIC_API_KEY="test-no-real-calls",
     OPENAI_API_KEY="",
+    VOYAGE_API_KEY="",
     DEFAULT_MODEL="claude-opus-5-5",
     DEFAULT_EFFORT="low",
     HISTORY_LIMIT="30",

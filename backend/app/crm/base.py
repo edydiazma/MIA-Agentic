@@ -7,7 +7,9 @@ from datetime import datetime
 
 import httpx
 
-PROVIDERS = {"hubspot": "HubSpot", "salesforce": "Salesforce"}
+PROVIDERS = {"hubspot": "HubSpot", "salesforce": "Salesforce", "zoho": "Zoho CRM", "odoo": "Odoo"}
+# Proveedores que usan outbox/mapeos/sync. "custom" = conectores propios con push (settings.crm_push).
+CRM_PROVIDERS = (*PROVIDERS, "custom")
 
 
 class CRMError(Exception):

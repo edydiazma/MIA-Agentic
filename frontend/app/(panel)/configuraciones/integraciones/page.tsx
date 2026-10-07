@@ -8,12 +8,19 @@ import { ENTITY_LABEL, OUTBOX_STATUS_LABEL } from "@/lib/crm-types";
 import { Badge, Card, ErrorBox, Field, Loading, Modal, PageHeader, Toggle, useAction, useApi } from "@/components/ui";
 import { AdminNotice, ConfigTabs, useIsAdmin } from "@/components/config/common";
 import MappingsEditor from "@/components/crm/MappingsEditor";
+import HubConnections from "@/components/hub/HubConnections";
 
 const DESCRIPTION: Record<CRMProvider, string> = {
   hubspot:
     "Crea y actualiza contactos y negocios en HubSpot, agrega una nota con el resumen al cerrar cada conversación y trae de vuelta los cambios hechos en HubSpot.",
   salesforce:
     "Sincroniza clientes como Contactos o Leads y los negocios como Oportunidades. Al cerrar una conversación registra una Tarea con el resumen.",
+  zoho: "Crea y actualiza Contactos y Negocios (Deals) en Zoho CRM, agrega una nota con el resumen al cerrar la conversación y trae los cambios.",
+  odoo: "Sincroniza clientes como Contactos (res.partner) y negocios como Oportunidades del CRM de Odoo, con notas en el chatter.",
+};
+const PROVIDER_NAME: Record<string, string> = {
+  hubspot: "HubSpot", salesforce: "Salesforce", zoho: "Zoho CRM", odoo: "Odoo", shopify: "Shopify",
+  google_calendar: "Google Calendar", microsoft_calendar: "Outlook",
 };
 
 export default function IntegracionesPage() {
@@ -34,7 +41,7 @@ function Integraciones() {
   useEffect(() => {
     const provider = params.get("provider");
     if (!provider) return;
-    const name = provider === "hubspot" ? "HubSpot" : "Salesforce";
+    const name = PROVIDER_NAME[provider] ?? provider;
     if (params.get("connected")) setNotice({ tone: "ok", text: `${name} quedó conectado. La primera sincronización empieza en unos segundos.` });
     else if (params.get("error")) setNotice({ tone: "bad", text: `${name}: ${params.get("error")}` });
     router.replace("/configuraciones/integraciones");
@@ -42,7 +49,7 @@ function Integraciones() {
 
   return (
     <>
-      <PageHeader title="Configuraciones" subtitle="Integraciones: conecta tu CRM para sincronizar clientes, negocios y notas." />
+      <PageHeader title="Configuraciones" subtitle="Integraciones: CRM, tiendas en línea y calendarios para sincronizar clientes, negocios, pedidos y citas." />
       <ConfigTabs />
       <AdminNotice />
       {notice && (
@@ -72,6 +79,9 @@ function Integraciones() {
           ))}
         </div>
       )}
+      <div style={{ marginTop: 24 }}>
+        <HubConnections />
+      </div>
     </>
   );
 }
@@ -80,6 +90,7 @@ function ProviderCard({ status: s, onChange, reload }: { status: CRMStatus; onCh
   const isAdmin = useIsAdmin();
   const [run, busy, error] = useAction();
   const [tokenModal, setTokenModal] = useState(false);
+  const [odooModal, setOdooModal] = useState(false);
   const [panel, setPanel] = useState<"mappings" | "outbox" | null>(null);
   const [mappingsKey, setMappingsKey] = useState(0);
   const base = `/api/integrations/${s.provider}`;
@@ -130,9 +141,15 @@ function ProviderCard({ status: s, onChange, reload }: { status: CRMStatus; onCh
         ) : (
           <>
             {s.provider === "hubspot" && <button onClick={() => setTokenModal(true)}>Usar token de app privada</button>}
-            <button className="primary" disabled={busy || !s.configured} onClick={connect}>
-              Conectar con {s.label}
-            </button>
+            {s.provider === "odoo" ? (
+              <button className="primary" onClick={() => setOdooModal(true)}>
+                Conectar con clave de API
+              </button>
+            ) : (
+              <button className="primary" disabled={busy || !s.configured} onClick={connect}>
+                Conectar con {s.label}
+              </button>
+            )}
           </>
         ))
       }
@@ -217,7 +234,7 @@ function ProviderCard({ status: s, onChange, reload }: { status: CRMStatus; onCh
             </div>
           </div>
 
-          {isAdmin && (
+          {isAdmin && (s.provider === "hubspot" || s.provider === "salesforce") && (
             <AttributionSync
               provider={s.provider}
               onMapped={() => {
@@ -240,6 +257,15 @@ function ProviderCard({ status: s, onChange, reload }: { status: CRMStatus; onCh
         </div>
       )}
       <ErrorBox error={error} />
+      {odooModal && (
+        <OdooModal
+          onClose={() => setOdooModal(false)}
+          onSaved={(next) => {
+            setOdooModal(false);
+            onChange(next);
+          }}
+        />
+      )}
       {tokenModal && (
         <TokenModal
           onClose={() => setTokenModal(false)}
@@ -250,6 +276,50 @@ function ProviderCard({ status: s, onChange, reload }: { status: CRMStatus; onCh
         />
       )}
     </Card>
+  );
+}
+
+function OdooModal({ onClose, onSaved }: { onClose: () => void; onSaved: (s: CRMStatus) => void }) {
+  const [form, setForm] = useState({ url: "https://", db: "", login: "", api_key: "" });
+  const [run, busy, error] = useAction();
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [k]: e.target.value });
+  async function save() {
+    const r = await run(() => send<CRMStatus>("/api/integrations/odoo/credentials", "POST", form));
+    if (r) onSaved(r);
+  }
+  return (
+    <Modal
+      title="Conectar Odoo"
+      onClose={onClose}
+      footer={
+        <>
+          <button onClick={onClose}>Cancelar</button>
+          <button className="primary" disabled={busy || !form.db || !form.login || !form.api_key} onClick={save}>
+            {busy ? "Validando…" : "Conectar"}
+          </button>
+        </>
+      }
+    >
+      <div className="form">
+        <p className="small muted" style={{ margin: 0 }}>
+          En Odoo: Preferencias del usuario → Seguridad de la cuenta → Nueva clave de API. El usuario necesita acceso a
+          Contactos y CRM. La clave se guarda cifrada en la bóveda.
+        </p>
+        <Field label="URL de Odoo">
+          <input value={form.url} onChange={set("url")} placeholder="https://miempresa.odoo.com" />
+        </Field>
+        <Field label="Base de datos">
+          <input value={form.db} onChange={set("db")} placeholder="miempresa" />
+        </Field>
+        <Field label="Usuario (correo)">
+          <input value={form.login} onChange={set("login")} />
+        </Field>
+        <Field label="Clave de API">
+          <input type="password" autoComplete="off" value={form.api_key} onChange={set("api_key")} />
+        </Field>
+        <ErrorBox error={error} />
+      </div>
+    </Modal>
   );
 }
 

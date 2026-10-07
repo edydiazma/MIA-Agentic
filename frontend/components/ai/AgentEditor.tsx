@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { api, send, type Channel } from "@/lib/api";
 import type { AIAgent, AIAgentIn, Cortex } from "@/lib/ai-types";
 import { Card, ErrorBox, Field, Toggle, useAction, useApi } from "@/components/ui";
@@ -159,10 +160,13 @@ export default function AgentEditor({
       </Card>
 
       <Card
-        title="Base de conocimiento vinculada"
+        title="Documentos anteriores vinculados"
         actions={
           isAdmin ? (
             <>
+              <Link href="/automatizaciones/cortex/conocimiento" className="button">
+                Base de conocimiento (RAG) →
+              </Link>
               <button onClick={() => upload.current?.click()} disabled={busy}>⬆ Subir PDF / txt / md</button>
               <input
                 ref={upload}
@@ -180,6 +184,10 @@ export default function AgentEditor({
         }
       >
         {!form.use_knowledge && <p className="muted small">La base de conocimiento está desactivada para este agente.</p>}
+        <p className="muted small">
+          Las fuentes nuevas (archivos, sitio web, catálogo, conversaciones, preguntas frecuentes) se administran en{" "}
+          <Link href="/automatizaciones/cortex/conocimiento">Base de conocimiento</Link> y se consultan con búsqueda semántica.
+        </p>
         {(docs.data ?? []).length === 0 ? (
           <p className="muted">No hay documentos. Sube uno para compartirlo entre agentes.</p>
         ) : (

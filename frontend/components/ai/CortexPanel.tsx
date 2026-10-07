@@ -34,6 +34,7 @@ const PURPOSE_LABEL: Record<CortexPurpose, string> = {
   golden: "Datos maestros",
   copilot: "Copiloto",
   assistant: "Asistente",
+  embedding: "Embeddings (conocimiento)",
 };
 
 const EMPTY: CortexIn = {

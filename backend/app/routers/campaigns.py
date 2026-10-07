@@ -25,6 +25,7 @@ class CampaignIn(BaseModel):
     template_language: str
     params: list[str] = []
     tag: str | None = None  # audiencia por etiqueta
+    segment_id: int | None = None  # o por segmento (§21.1)
     phones: list[str] = []  # o lista de números
     channel_id: int | None = None
 
@@ -114,7 +115,22 @@ async def create_campaign(body: CampaignIn, agent: Agent = Depends(require_admin
                           session: AsyncSession = Depends(get_session)):
     org = agent.organization_id
     channel = await channel_for(session, org, body.channel_id)
-    if body.tag:
+    if body.segment_id:
+        from app import segments
+        from app.models import Segment
+
+        segment = await session.get(Segment, body.segment_id)
+        if segment is None or segment.organization_id != org:
+            raise HTTPException(404, "Segmento no encontrado")
+        try:
+            ids = await segments.segment_contact_ids(session, segment)
+        except segments.SegmentError as e:
+            raise HTTPException(422, str(e)) from e
+        contacts = list((await session.scalars(select(Contact).where(
+            Contact.organization_id == org, Contact.id.in_(ids or [0]), Contact.blocked.is_(False))))
+            .all())
+        audience = {"segment_id": segment.id, "segment": segment.name}
+    elif body.tag:
         tag = await session.scalar(select(Tag).where(Tag.organization_id == org, Tag.name == body.tag.strip().lower()))
         contacts = list((await session.scalars(
             select(Contact).join(ContactTag, ContactTag.contact_id == Contact.id)

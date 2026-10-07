@@ -43,7 +43,7 @@ export const fmtMoney = (n: number | null | undefined, currency = "COP") =>
     : n.toLocaleString("es", { style: "currency", currency, maximumFractionDigits: currency === "COP" ? 0 : 2 });
 
 // ---------- Integraciones ----------
-export type CRMProvider = "hubspot" | "salesforce";
+export type CRMProvider = "hubspot" | "salesforce" | "zoho" | "odoo";
 export type ConnectionStatus = "connected" | "error" | "disconnected";
 export type PushContacts = "all" | "with_deal" | "none";
 

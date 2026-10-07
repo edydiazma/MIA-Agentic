@@ -82,6 +82,7 @@ CATALOG: dict[str, dict[str, str]] = {
     "Exportaciones": {
         "exports.contacts": "Exportar clientes",
         "exports.conversations": "Exportar conversaciones",
+        "exports.data": "Exportar datos al almacén (BigQuery, S3, GCS)",
     },
 }
 ALL: frozenset[str] = frozenset(k for group in CATALOG.values() for k in group)

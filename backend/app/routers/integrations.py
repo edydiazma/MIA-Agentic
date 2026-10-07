@@ -120,6 +120,9 @@ async def crm_status(agent: Agent = Depends(current_agent), session: AsyncSessio
 @router.get("/{provider}/connect", dependencies=CRM)
 async def connect(provider: str, agent: Agent = Depends(require_permission("integrations.manage"))):
     _provider(provider)
+    if provider == "odoo":
+        raise HTTPException(400, "Odoo se conecta con URL, base de datos, usuario y clave de API "
+                                 "(POST /api/integrations/odoo/credentials)")
     if not cx.configured(provider):
         raise HTTPException(409, f"Falta configurar la app de {PROVIDERS[provider]} en el servidor "
                                  f"({provider.upper()}_CLIENT_ID / _CLIENT_SECRET)")
@@ -150,6 +153,18 @@ async def callback(provider: str, code: str | None = None, state: str | None = N
             account = await hubspot.HubSpotAdapter(tokens["access_token"]).account()
             await cx.upsert_connection(session, st["org"], provider, st["agent"], tokens,
                                        str(account.get("portalId") or ""), scopes=hubspot.SCOPES)
+        elif provider == "zoho":
+            from app.hub import zoho
+
+            tokens = await zoho.exchange_code(s.zoho_client_id, s.zoho_client_secret, cx.redirect_uri(provider), code)
+            if tokens.get("error") or not tokens.get("access_token"):
+                raise CRMError(f"Zoho: {tokens.get('error') or 'sin token'}", retryable=False)
+            org_info = await zoho.ZohoAdapter(tokens["access_token"], tokens.get("api_domain") or "").org()
+            await cx.upsert_connection(session, st["org"], provider, st["agent"], tokens,
+                                       str(org_info.get("id") or org_info.get("zgid") or ""),
+                                       instance_url=tokens.get("api_domain"), scopes=zoho.SCOPES)
+        elif provider == "odoo":
+            return _front({"provider": provider, "error": "Odoo se conecta con clave de API"})
         else:
             tokens = await salesforce.exchange_code(s.salesforce_login_url, s.salesforce_client_id,
                                                     s.salesforce_client_secret, cx.redirect_uri(provider), code)
@@ -161,6 +176,37 @@ async def callback(provider: str, code: str | None = None, state: str | None = N
         log.warning("OAuth %s falló: %s", provider, e)
         return _front({"provider": provider, "error": "No se pudo completar la conexión"})
     return _front({"provider": provider, "connected": "1"})
+
+
+class OdooIn(BaseModel):
+    url: str
+    db: str
+    login: str
+    api_key: str
+
+
+@router.post("/odoo/credentials", dependencies=CRM)
+async def odoo_credentials(body: OdooIn, agent: Agent = Depends(require_permission("integrations.manage")),
+                           session: AsyncSession = Depends(get_session)):
+    """Odoo (JSON-RPC externo): valida usuario + clave de API y guarda la conexión (clave en Vault)."""
+    from app.hub import odoo
+
+    url = body.url.strip().rstrip("/")
+    try:
+        adapter = odoo.OdooAdapter(url, body.db.strip(), body.login.strip(), body.api_key.strip())
+        uid = await adapter.authenticate()
+        version = (await adapter.version() or {}).get("server_version")
+    except TokenRevoked:
+        raise HTTPException(400, "Odoo rechazó el usuario o la clave de API") from None
+    except CRMError as e:
+        raise HTTPException(400, f"No se pudo validar Odoo: {e}") from None
+    conn = await cx.upsert_connection(session, agent.organization_id, "odoo", agent.id,
+                                      {"access_token": body.api_key.strip()}, f"{body.db.strip()}:{uid}",
+                                      instance_url=url)
+    conn.settings = {**(conn.settings or {}), "db": body.db.strip(), "login": body.login.strip(),
+                     "server_version": version}
+    await session.commit()
+    return await _status(session, agent.organization_id, "odoo")
 
 
 @router.post("/hubspot/token", dependencies=CRM)

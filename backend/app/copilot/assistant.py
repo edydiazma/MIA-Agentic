@@ -48,6 +48,10 @@ TOOLS = [
     _tool("customers", "Clientes: nuevos, activos, recurrentes, recencia, antigüedad."),
     _tool("products", "Productos más pedidos: mencionados, cotizados, comprados y conversión."),
     _tool("copilot_adoption", "Uso del copiloto por asesor: sugerencias mostradas, aceptadas, editadas, descartadas."),
+    ToolSpec("knowledge_search", "Busca en la base de conocimiento de la empresa (políticas, productos, procesos) y "
+             "devuelve fragmentos con su fuente; cita el título de la fuente al responder.",
+             {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"],
+              "additionalProperties": False}),
 ]
 
 SYSTEM = (
@@ -131,6 +135,12 @@ async def run_tool(session: AsyncSession, agent: Agent, name: str, args: dict) -
         from app.routers.copilot import adoption_data
 
         data = await adoption_data(session, agent, start, end)
+    elif name == "knowledge_search":
+        from app.knowledge import retrieve
+
+        kb = await retrieve.search(session, org, str(args.get("query") or ""), limit=5, agent_id=agent.id)
+        data = {"passages": [{**p.citation(), "content": p.content[:1500]} for p in kb.passages],
+                "found": bool(kb.passages)}
     else:
         return {"error": f"Herramienta desconocida: {name}"}, None
     if hasattr(data, "model_dump"):

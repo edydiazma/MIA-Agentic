@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.crm import attribution_fields
-from app.crm.base import CRMAdapter, CRMError, RemoteRecord, TokenRevoked, payload_hash
+from app.crm.base import CRM_PROVIDERS, CRMAdapter, CRMError, RemoteRecord, TokenRevoked, payload_hash
 from app.crm.connections import adapter_for
 from app.db import SessionLocal
 from app.fields import coerce, fields_by_key, set_custom, set_native
@@ -164,11 +164,14 @@ async def save_link(session: AsyncSession, conn_id: int, local_type: str, local_
 
 
 def contact_remote_type(conn: IntegrationConnection) -> str:
-    return "contact" if conn.provider == "hubspot" else (conn.settings or {}).get("contact_object", "Contact")
+    if conn.provider in ("hubspot", "custom"):
+        return "contact"
+    return {"zoho": "Contacts", "odoo": "res.partner"}.get(conn.provider) or (conn.settings or {}).get(
+        "contact_object", "Contact")
 
 
 def deal_remote_type(conn: IntegrationConnection) -> str:
-    return "deal" if conn.provider == "hubspot" else "Opportunity"
+    return {"hubspot": "deal", "custom": "deal", "zoho": "Deals", "odoo": "crm.lead"}.get(conn.provider, "Opportunity")
 
 
 # --- Push -----------------------------------------------------------------------
@@ -225,7 +228,7 @@ async def push_note(session: AsyncSession, conn: IntegrationConnection, adapter:
     deal = await session.scalar(select(Deal).where(Deal.conversation_id == conv.id).limit(1))
     deal_link = await get_link(session, conn.id, "deal", deal.id) if deal else None
     note_id = await adapter.add_note(contact_remote, note_text(conv), deal_link.remote_id if deal_link else None)
-    await save_link(session, conn.id, "conversation", conv.id, "note" if conn.provider == "hubspot" else "Task",
+    await save_link(session, conn.id, "conversation", conv.id, {"salesforce": "Task"}.get(conn.provider, "note"),
                     note_id, note_hash)
     return note_id, True
 
@@ -321,9 +324,10 @@ async def _enqueue(session: AsyncSession, conn: IntegrationConnection, entity_ty
 
 
 async def _connections(session: AsyncSession, org: int) -> list[IntegrationConnection]:
-    return list((await session.scalars(select(IntegrationConnection).where(
+    return [c for c in (await session.scalars(select(IntegrationConnection).where(
         IntegrationConnection.organization_id == org, IntegrationConnection.status == "connected",
-        IntegrationConnection.sync_enabled, IntegrationConnection.provider.in_(("hubspot", "salesforce"))))).all())
+        IntegrationConnection.sync_enabled, IntegrationConnection.provider.in_(CRM_PROVIDERS)))).all()
+                if c.provider != "custom" or (c.settings or {}).get("crm_push")]
 
 
 async def enqueue_contact(session: AsyncSession, contact_id: int) -> None:
@@ -551,10 +555,12 @@ async def crm_loop() -> None:
         await asyncio.sleep(30)
         try:
             async with SessionLocal() as session:
-                rows = (await session.execute(select(IntegrationConnection.id, IntegrationConnection.organization_id)
-                                              .where(IntegrationConnection.status == "connected",
-                                                     IntegrationConnection.sync_enabled,
-                                                     IntegrationConnection.provider.in_(("hubspot", "salesforce"))))).all()
+                rows = [(r[0], r[1]) for r in (await session.execute(
+                select(IntegrationConnection.id, IntegrationConnection.organization_id, IntegrationConnection.provider,
+                       IntegrationConnection.settings)
+                .where(IntegrationConnection.status == "connected", IntegrationConnection.sync_enabled,
+                       IntegrationConnection.provider.in_(CRM_PROVIDERS)))).all()
+                    if r[2] != "custom" or (r[3] or {}).get("crm_push")]
             ids = [r[0] for r in rows]
             from app import jobs
 

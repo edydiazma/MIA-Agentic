@@ -40,6 +40,9 @@ reports, on **Supabase** (Postgres + Realtime + Storage + Vault + cron).
 | **Copiloto de IA** | Reply suggestions, drafts/rewrite, next best action, handoff and conversation summaries, supervisor assistant over reports |
 | **Correo y botón de WhatsApp** | Email channel (Postmark/SendGrid/Mailgun/IMAP inbound, SMTP replies in thread), embeddable WhatsApp floating button, advisor-initiated WhatsApp calls |
 | **Operación a escala** | Postgres job queue, separate voice service, panel on Supabase Realtime, reports replica, integration diagnostics (`python -m app.preflight`), load tests (`loadtest/`), runbooks (`docs/ops/`) |
+| **Journeys y segmentos** | Dynamic segments over customer 360 / golden keys / vehicles / consents, multi-step journeys with waits, branches, A/B tests, frequency caps, quiet hours and goals |
+| **Base de conocimiento** | RAG with pgvector: files, website, catalog, resolved conversations; hybrid search with citations; knowledge gaps |
+| **Hub de integraciones** | Shopify / WooCommerce / VTEX orders, Google / Outlook calendars, Zoho / Odoo, custom REST connector builder, data export to BigQuery / S3 / GCS |
 | **Seguimiento / Configuraciones** | Follow-ups, appointments; platform, messaging, conversations, AI classification, client fields, users, company, resources, appointments |
 
 ## Architecture
@@ -64,7 +67,7 @@ Requirements: Python 3.13+, Node 22+, Postgres 17 (Homebrew `postgresql@17`) for
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 cp .env.example .env     # DATABASE_URL → your Supabase project (Session pooler) or a local Postgres with the migrations
-.venv/bin/python -m pytest          # builds a temporary Postgres from supabase/migrations and runs the 188 tests
+.venv/bin/python -m pytest          # builds a temporary Postgres from supabase/migrations and runs the 229 tests
 .venv/bin/python -m app.demo        # (optional) demo data — dev environments only
 .venv/bin/uvicorn app.main:app --reload --port 8000
 

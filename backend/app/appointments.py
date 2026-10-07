@@ -20,7 +20,7 @@ async def config(session: AsyncSession, org: int) -> tuple[dict, ZoneInfo]:
     return cfg, tz
 
 
-async def available_slots(session: AsyncSession, org: int, day: date) -> list[datetime]:
+async def available_slots(session: AsyncSession, org: int, day: date, agent_id: int | None = None) -> list[datetime]:
     cfg, tz = await config(session, org)
     now = utcnow()
     if day.weekday() not in cfg["days"] or day > (now.astimezone(tz).date() + timedelta(days=cfg["max_days_ahead"])):
@@ -38,9 +38,19 @@ async def available_slots(session: AsyncSession, org: int, day: date) -> list[da
         .group_by(Appointment.starts_at))).all()
     taken = {_utc(s): n for s, n in taken_rows}
 
+    # Calendario conectado (Google / Outlook): sus ocupados bloquean horarios (app/hub/calendars.py)
+    busy: list = []
+    try:
+        from app.hub.calendars import busy_intervals
+
+        busy = await busy_intervals(session, org, cur.astimezone(UTC), end.astimezone(UTC), agent_id)
+    except Exception:  # noqa: BLE001 — sin calendario o caído: la agenda funciona igual
+        busy = []
+
     slots = []
     while cur + step <= end:
-        if cur > now and taken.get(cur.astimezone(UTC), 0) < cfg["capacity"]:
+        overlaps = any(b0 < cur + step and b1 > cur for b0, b1 in busy)
+        if cur > now and not overlaps and taken.get(cur.astimezone(UTC), 0) < cfg["capacity"]:
             slots.append(cur)
         cur += step
     return slots

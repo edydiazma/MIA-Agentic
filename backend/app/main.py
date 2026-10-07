@@ -60,7 +60,13 @@ ROUTERS = ["webhook", "auth", "inbox", "bots", "knowledge", "contacts", "campaig
            # Escala: cola de trabajos (admin), nodos de voz (interno), llamadas salientes, token de Supabase Realtime
            "ops_jobs", "voice_internal", "outbound_calls", "realtime_token",
            # Diagnóstico de integraciones para salir a producción (§20)
-           "preflight"]
+           "preflight",
+           # Base de conocimiento con RAG
+           "knowledge_base",
+           # Journeys de marketing y segmentos (§21.1)
+           "segments", "journeys",
+           # Hub de integraciones: tiendas, calendarios, Zoho/Odoo, conectores propios, exportación (§21.3)
+           "hub"]
 
 
 async def bootstrap(org: int | None = None) -> None:
@@ -142,6 +148,9 @@ LOOPS = [
     "app.automations:sla_loop",  # reglas de SLA con temporizador (una vez por ciclo)
     "app.statuses:sessions_loop",  # sesiones sin latido → desconectado
     "app.voice.nodes:voice_watchdog_loop",  # llamadas de un nodo de voz caído → fallidas + alerta (§19.2)
+    "app.knowledge.ingest:knowledge_loop",  # fuentes de conocimiento con refresh_hours + documentos anteriores
+    "app.journeys.scheduler:journey_loop",  # journeys: vencidos → cola outbound, segmentos, fechas y eventos (§21.1)
+    "app.hub.runner:hub_loop",  # hub: tiendas, calendarios, conectores propios y exportaciones (§21.3)
 ]
 
 

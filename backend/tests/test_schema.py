@@ -24,7 +24,7 @@ async def test_orm_matches_migrations():
         for name in orm_cols.keys() - cols.keys():
             problems.append(f"{table.name}.{name}: está en el ORM y no en la base")
         # Columnas de la base que el ORM ignora (solo se permiten las generadas)
-        for name in cols.keys() - orm_cols.keys() - {"search", "chars"}:
+        for name in cols.keys() - orm_cols.keys() - {"search", "chars", "fts"}:
             problems.append(f"{table.name}.{name}: está en la base y no en el ORM")
         for name, col in orm_cols.items():
             if name in cols and not col.primary_key and col.nullable != cols[name]:

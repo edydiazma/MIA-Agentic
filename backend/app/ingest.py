@@ -161,6 +161,14 @@ async def _handle_status(status: dict, phone_number_id: str | None = None) -> No
         await session.commit()
         if msg:
             await hub.broadcast("message.status", message_out(msg), msg.organization_id)
+        if msg is not None and msg.journey_id:  # journeys: entregado / leído / fallido (§21.1)
+            try:
+                from app.journeys.hooks import on_status as journey_status
+
+                await journey_status(session, msg, new)
+            except Exception:  # noqa: BLE001 — nunca debe impedir procesar el estado
+                log.exception("Journey: no se pudo registrar el estado del mensaje %s", msg.id)
+                await session.rollback()
 
 
 # --- Alertas de la cuenta (plantillas, calidad, cuenta) -------------------------
@@ -344,6 +352,14 @@ async def after_inbound(session, conv: Conversation, msg: Message, raw: dict, is
         await agent_config_inbound(session, conv, msg)
     except Exception:  # noqa: BLE001 — nunca debe impedir que el mensaje se procese
         log.exception("Configuración avanzada del agente falló en la conversación %s", conv.id)
+        await session.rollback()
+        await session.refresh(conv)
+    try:  # journeys: la respuesta del cliente (ramas «respondió», meta «replied», salida por opt-out) (§21.1)
+        from app.journeys.hooks import on_inbound as journey_inbound
+
+        await journey_inbound(session, conv, msg)
+    except Exception:  # noqa: BLE001 — nunca debe impedir que el mensaje se procese
+        log.exception("Journey: no se pudo registrar la respuesta en la conversación %s", conv.id)
         await session.rollback()
         await session.refresh(conv)
     # Orden: flujos (espera de respuesta, flujo del mensaje disparador, palabras clave) → automatizaciones → IA

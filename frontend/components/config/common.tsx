@@ -26,6 +26,8 @@ export const CONFIG_TABS = [
   { href: "/configuraciones/recursos", label: "Gestor de recursos" },
   { href: "/configuraciones/citas", label: "Citas" },
   { href: "/configuraciones/integraciones", label: "Integraciones" },
+  { href: "/configuraciones/conectores", label: "Conectores propios" },
+  { href: "/configuraciones/exportacion", label: "Exportación de datos" },
   { href: "/configuraciones/atribucion", label: "Atribución web" },
   { href: "/configuraciones/mensajes-disparadores", label: "Mensajes disparadores" },
   { href: "/configuraciones/conversiones", label: "Conversiones" },

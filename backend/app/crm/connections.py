@@ -22,7 +22,9 @@ def configured(provider: str) -> bool:
         return bool(s.hubspot_client_id and s.hubspot_client_secret)
     if provider == "salesforce":
         return bool(s.salesforce_client_id and s.salesforce_client_secret)
-    return False
+    if provider == "zoho":
+        return bool(s.zoho_client_id and s.zoho_client_secret)
+    return provider == "odoo"  # Odoo: credenciales por organización (URL, base, usuario, clave de API)
 
 
 def redirect_uri(provider: str) -> str:
@@ -49,6 +51,12 @@ def authorize_url(provider: str, org: int, agent_id: int) -> str:
         return hubspot.AUTHORIZE_URL + "?" + urlencode({
             "client_id": s.hubspot_client_id, "redirect_uri": redirect_uri(provider),
             "scope": " ".join(hubspot.SCOPES), "state": state})
+    if provider == "zoho":
+        from app.hub import zoho
+
+        return zoho.authorize_url() + "?" + urlencode({
+            "response_type": "code", "client_id": s.zoho_client_id, "redirect_uri": redirect_uri(provider),
+            "scope": ",".join(zoho.SCOPES), "access_type": "offline", "prompt": "consent", "state": state})
     return salesforce.authorize_url(s.salesforce_login_url) + "?" + urlencode({
         "response_type": "code", "client_id": s.salesforce_client_id, "redirect_uri": redirect_uri(provider),
         "scope": " ".join(salesforce.SCOPES), "state": state})
@@ -73,6 +81,13 @@ def default_mappings(provider: str, contact_object: str = "Contact") -> list[dic
                                    "won": "closedwon", "lost": "closedlost"}}},
             {"object": "deal", "local_field": "deal.close_date", "remote_property": "closedate", "direction": "push"},
         ]
+    if provider in ("zoho", "odoo"):
+        from app.hub import odoo, zoho
+
+        return [dict(m) for m in (zoho if provider == "zoho" else odoo).DEFAULT_MAPPINGS]
+    if provider == "custom":
+        return [{"object": "contact", "local_field": f, "remote_property": f, "direction": "push"}
+                for f in ("name", "email", "phone")]
     return [
         {"object": "contact", "local_field": "first_name", "remote_property": "FirstName", "direction": "both"},
         {"object": "contact", "local_field": "last_name", "remote_property": "LastName", "direction": "both"},
@@ -134,6 +149,13 @@ async def refresh_tokens(session: AsyncSession, conn: IntegrationConnection) -> 
         raise CRMError("No hay refresh token: vuelve a conectar la cuenta", retryable=False, status=401)
     if conn.provider == "hubspot":
         tokens = await hubspot.refresh(s.hubspot_client_id, s.hubspot_client_secret, refresh_token)
+    elif conn.provider == "zoho":
+        from app.hub import zoho
+
+        tokens = await zoho.refresh(s.zoho_client_id, s.zoho_client_secret, refresh_token)
+        tokens.pop("refresh_token", None)  # Zoho no rota el refresh token
+        if tokens.get("api_domain"):
+            conn.instance_url = tokens["api_domain"]
     else:
         tokens = await salesforce.refresh(s.salesforce_login_url, s.salesforce_client_id, s.salesforce_client_secret,
                                           refresh_token)
@@ -144,6 +166,19 @@ async def refresh_tokens(session: AsyncSession, conn: IntegrationConnection) -> 
 
 
 async def adapter_for(session: AsyncSession, conn: IntegrationConnection, force_refresh: bool = False) -> CRMAdapter:
+    if conn.provider == "custom":
+        from app.hub import builder
+
+        defn, client = await builder.load(session, conn)
+        return builder.CustomRestAdapter(defn, client)
+    if conn.provider == "odoo":  # clave de API (sin OAuth): instance_url = URL, settings.db / settings.login
+        from app.hub import odoo
+
+        key = await get_secret(session, conn.access_token_secret_id)
+        s = conn.settings or {}
+        if not key or not conn.instance_url:
+            raise CRMError("Faltan las credenciales de Odoo", retryable=False, status=401)
+        return odoo.OdooAdapter(conn.instance_url, s.get("db") or "", s.get("login") or "", key)
     if force_refresh or (conn.expires_at and conn.expires_at - utcnow() < timedelta(minutes=2)
                          and conn.refresh_token_secret_id):
         await refresh_tokens(session, conn)
@@ -152,6 +187,10 @@ async def adapter_for(session: AsyncSession, conn: IntegrationConnection, force_
         raise CRMError("La conexión no tiene token", retryable=False, status=401)
     if conn.provider == "hubspot":
         return hubspot.HubSpotAdapter(token)
+    if conn.provider == "zoho":
+        from app.hub import zoho
+
+        return zoho.ZohoAdapter(token, conn.instance_url or "")
     return salesforce.SalesforceAdapter(token, conn.instance_url or "", (conn.settings or {}).get("contact_object", "Contact"))
 
 
@@ -164,6 +203,10 @@ async def disconnect(session: AsyncSession, conn: IntegrationConnection) -> None
             await hubspot.revoke(refresh_token)
         elif conn.provider == "salesforce" and (refresh_token or access_token):
             await salesforce.revoke(s.salesforce_login_url, refresh_token or access_token)
+        elif conn.provider == "zoho" and refresh_token:
+            from app.hub import zoho
+
+            await zoho.revoke(refresh_token)
     except Exception:  # noqa: BLE001
         pass
     await delete_secret(session, conn.access_token_secret_id)

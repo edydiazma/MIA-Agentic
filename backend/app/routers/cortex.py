@@ -23,7 +23,7 @@ from app.settings_store import add_revision
 
 router = APIRouter(prefix="/api/ai", tags=["cortex"])
 
-PURPOSES = ("chat", "classification", "learning", "flow", "json_edit", "qa", "agent_test", "onboarding", "golden", "copilot", "assistant", "any")
+PURPOSES = ("chat", "classification", "learning", "flow", "json_edit", "qa", "agent_test", "onboarding", "golden", "copilot", "assistant", "embedding", "any")
 STRATEGIES = ("failover", "lowest_latency", "weighted")
 TEST_SCHEMA = {
     "type": "object",
@@ -198,8 +198,9 @@ def cortex_document(out: CortexOut) -> dict:
 
 
 def _validate_connection(body: ConnectionIn) -> None:
-    if body.provider not in PROVIDERS:
-        raise HTTPException(422, f"Proveedor inválido: {', '.join(PROVIDERS)}")
+    allowed = (*PROVIDERS, "voyage")  # voyage: solo embeddings / rerank de la base de conocimiento
+    if body.provider not in allowed:
+        raise HTTPException(422, f"Proveedor inválido: {', '.join(allowed)}")
     if not body.name.strip() or not body.model.strip():
         raise HTTPException(422, "Nombre y modelo son obligatorios")
     if body.provider in ("openai_compatible", "azure_openai") and not (body.base_url or "").startswith("http"):

@@ -21,3 +21,6 @@ sentry-sdk>=2.18
 pywebpush>=2.0
 # SSO SAML 2.0: verificación de firmas XML (lxml + cryptography)
 signxml>=4.0
+
+# Base de conocimiento: columnas vector (pgvector) en SQLAlchemy / asyncpg
+pgvector>=0.4

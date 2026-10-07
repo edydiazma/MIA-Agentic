@@ -19,6 +19,7 @@ const PURPOSE: Record<string, string> = {
   golden: "Datos maestros",
   copilot: "Copiloto",
   assistant: "Asistente",
+  embedding: "Embeddings (conocimiento)",
   test: "Pruebas",
 };
 const usd = (n: number) => `US$ ${n.toLocaleString("es", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;

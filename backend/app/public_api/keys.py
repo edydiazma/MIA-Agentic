@@ -20,6 +20,7 @@ SCOPES = {
     "deals:write": "Crear y mover negocios",
     "webhooks:manage": "Suscribir webhooks (Zapier, Make, n8n)",
     "reports:read": "Leer reportes",
+    "journeys:write": "Inscribir clientes en journeys y enviar eventos",
 }
 KEY_RE = re.compile(r"^(wak_live_[a-z0-9]{8})_([A-Za-z0-9]{32})$")
 _ALPHABET = string.ascii_lowercase + string.digits

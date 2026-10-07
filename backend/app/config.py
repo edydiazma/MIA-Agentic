@@ -92,6 +92,16 @@ class Settings(BaseSettings):
     salesforce_client_id: str = ""
     salesforce_client_secret: str = ""
     salesforce_login_url: str = "https://login.salesforce.com"
+    # Hub de integraciones (docs/data-model.md §21.3). Google Calendar usa GOOGLE_OAUTH_CLIENT_ID/SECRET.
+    zoho_client_id: str = ""
+    zoho_client_secret: str = ""
+    zoho_accounts_url: str = "https://accounts.zoho.com"  # .eu / .in / .com.au según el centro de datos
+    microsoft_client_id: str = ""
+    microsoft_client_secret: str = ""
+    microsoft_tenant: str = "common"
+    shopify_client_id: str = ""  # app pública (OAuth); sin ella se conecta con el token de una app propia
+    shopify_client_secret: str = ""
+    shopify_api_version: str = "2026-10"
 
     # SaaS / facturación
     saas_signup_enabled: bool = True
@@ -110,6 +120,7 @@ class Settings(BaseSettings):
     # IA
     anthropic_api_key: str = ""
     openai_api_key: str = ""
+    voyage_api_key: str = ""  # embeddings / rerank de la base de conocimiento (Voyage AI); opcional
     default_provider: str = "anthropic"  # anthropic | openai
     default_model: str = "claude-opus-5-5"
     default_effort: str = "low"  # solo Claude: low | medium | high | xhigh | max

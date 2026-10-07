@@ -24,6 +24,7 @@ import FieldHistory from "@/components/fields/FieldHistory";
 import DealsSection from "@/components/crm/DealsSection";
 import ContactInsights, { WhatsAppIdentity } from "@/components/clients/ContactInsights";
 import InteractionProducts from "@/components/products/InteractionProducts";
+import ContactOrders from "@/components/hub/ContactOrders";
 import type { ContactRow } from "@/lib/customer-types";
 import MasterData from "@/components/golden/MasterData";
 import { SourceLine, type SourceFields } from "@/components/ads/SourceLine";
@@ -147,6 +148,7 @@ export default function ContactDetail({
           <div className="grid2">
             <ContactInsights contact={data} />
             <InteractionProducts contactId={data.id} />
+            <ContactOrders contactId={data.id} />
           </div>
           <div className="grid2">
             <Field label="Nombre">

@@ -15,6 +15,7 @@ from sqlalchemy import (
     Computed,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     Numeric,
@@ -25,6 +26,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, REAL, UUID
+from pgvector.sqlalchemy import Vector
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -516,6 +518,7 @@ class Message(Base):
     billable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     updated_at: Mapped[datetime] = ts(default=utcnow)
+    journey_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # enviado por un journey (migración 34)
 
 
 class MessageWaId(Base):
@@ -989,6 +992,9 @@ class Appointment(Base):
     status: Mapped[str] = mapped_column(Text, default="scheduled")
     created_by_type: Mapped[str] = mapped_column(Text, default="agent")  # bot | agent | flow
     created_at: Mapped[datetime] = ts(default=utcnow)
+    calendar_connection_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK integration_connections
+    external_event_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    calendar_synced_at: Mapped[datetime | None] = ts(nullable=True)
     updated_at: Mapped[datetime] = ts(default=utcnow)
 
     contact: Mapped[Contact] = relationship(lazy="joined")
@@ -1417,6 +1423,8 @@ class IntegrationConnection(Base):
     connected_by: Mapped[int | None] = fk("agents.id")
     created_at: Mapped[datetime] = ts(default=utcnow)
     updated_at: Mapped[datetime] = ts(default=utcnow)
+    connector_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # conector propio (migración 36)
+    label: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class IntegrationMapping(Base):
@@ -2625,3 +2633,296 @@ class SystemCheck(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     run_id: Mapped[int | None] = fk("system_check_runs.id", ondelete="SET NULL")
     checked_at: Mapped[datetime] = ts(default=utcnow)
+
+
+# =============================================================================
+# Journeys, base de conocimiento (RAG) e integraciones (migraciones 34–36). docs/data-model.md §21
+# =============================================================================
+class Segment(Base):
+    __tablename__ = "segments"
+    __table_args__ = (UniqueConstraint("organization_id", "name"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kind: Mapped[str] = mapped_column(Text, default="dynamic")  # dynamic | static
+    definition: Mapped[dict] = mapped_column(JSONB, default=dict)
+    member_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_computed_at: Mapped[datetime | None] = ts(nullable=True)
+    refresh_minutes: Mapped[int] = mapped_column(Integer, default=60)
+    created_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class SegmentMember(Base):
+    __tablename__ = "segment_members"
+
+    segment_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("segments.id", ondelete="CASCADE"), primary_key=True)
+    contact_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # FK en la base
+    added_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class Journey(Base):
+    __tablename__ = "journeys"
+    __table_args__ = (UniqueConstraint("organization_id", "name"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, default="draft")  # draft | active | paused | archived
+    entry: Mapped[dict] = mapped_column(JSONB, default=dict)
+    current_version_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK journey_versions
+    settings: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    published_at: Mapped[datetime | None] = ts(nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class JourneyVersion(Base):
+    __tablename__ = "journey_versions"
+    __table_args__ = (UniqueConstraint("journey_id", "version"),)
+
+    id: Mapped[int] = pk()
+    journey_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("journeys.id", ondelete="CASCADE"))
+    version: Mapped[int] = mapped_column(Integer)
+    definition: Mapped[dict] = mapped_column(JSONB)
+    change_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class JourneyEnrollment(Base):
+    """Particionada: PK (id, enrolled_at)."""
+
+    __tablename__ = "journey_enrollments"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    organization_id: Mapped[int] = mapped_column(BigInteger)
+    journey_id: Mapped[int] = mapped_column(BigInteger)
+    version_id: Mapped[int] = mapped_column(BigInteger)
+    contact_id: Mapped[int] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(Text, default="active")
+    current_step: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_run_at: Mapped[datetime | None] = ts(nullable=True)
+    variant: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context: Mapped[dict] = mapped_column(JSONB, default=dict)
+    exit_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    finished_at: Mapped[datetime | None] = ts(nullable=True)
+
+
+class JourneyEvent(Base):
+    """Particionada: PK (id, created_at)."""
+
+    __tablename__ = "journey_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    organization_id: Mapped[int] = mapped_column(BigInteger)
+    journey_id: Mapped[int] = mapped_column(BigInteger)
+    enrollment_id: Mapped[int] = mapped_column(BigInteger)
+    contact_id: Mapped[int] = mapped_column(BigInteger)
+    step_id: Mapped[str] = mapped_column(Text)
+    variant: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kind: Mapped[str] = mapped_column(Text)
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    data: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class KnowledgeSource(Base):
+    __tablename__ = "knowledge_sources"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    type: Mapped[str] = mapped_column(Text)  # upload|website|catalog|conversations|legacy_docs|faq|api
+    name: Mapped[str] = mapped_column(Text)
+    config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(Text, default="idle")
+    refresh_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    documents_count: Mapped[int] = mapped_column(Integer, default=0)
+    chunks_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_synced_at: Mapped[datetime | None] = ts(nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_agent_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class KnowledgeDocument(Base):
+    __tablename__ = "knowledge_documents"
+    __table_args__ = (UniqueConstraint("source_id", "uri"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    source_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("knowledge_sources.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(Text)
+    uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mime: Mapped[str | None] = mapped_column(Text, nullable=True)
+    storage_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    checksum: Mapped[str | None] = mapped_column(Text, nullable=True)
+    language: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, default="pending")
+    chunks_count: Mapped[int] = mapped_column(Integer, default=0)
+    tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+    valid_until: Mapped[datetime | None] = ts(nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class KnowledgeChunk(Base):
+    __tablename__ = "knowledge_chunks"
+    __table_args__ = (UniqueConstraint("document_id", "ordinal"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = mapped_column(BigInteger)
+    document_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("knowledge_documents.id", ondelete="CASCADE"))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    heading: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content: Mapped[str] = mapped_column(Text)
+    tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # fts: tsvector generada en la base (no se mapea)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class KnowledgeQuery(Base):
+    """Particionada: PK (id, created_at)."""
+
+    __tablename__ = "knowledge_queries"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    organization_id: Mapped[int] = mapped_column(BigInteger)
+    conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ai_agent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    agent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    query: Mapped[str] = mapped_column(Text)
+    results: Mapped[list] = mapped_column(JSONB, default=list)
+    top_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    answered: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    ai_call_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class KnowledgeGap(Base):
+    __tablename__ = "knowledge_gaps"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    topic: Mapped[str] = mapped_column(Text)
+    examples: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    occurrences: Mapped[int] = mapped_column(Integer, default=1)
+    first_seen_at: Mapped[datetime] = ts(default=utcnow)
+    last_seen_at: Mapped[datetime] = ts(default=utcnow)
+    status: Mapped[str] = mapped_column(Text, default="open")  # open | answered | ignored
+    resolved_document_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)
+
+
+class ConnectorDefinition(Base):
+    __tablename__ = "connector_definitions"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int | None] = fk("organizations.id", ondelete="CASCADE")  # null = plantilla
+    key: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    base_url: Mapped[str] = mapped_column(Text)
+    auth: Mapped[dict] = mapped_column(JSONB, default=dict)
+    endpoints: Mapped[list] = mapped_column(JSONB, default=list)
+    mappings: Mapped[dict] = mapped_column(JSONB, default=dict)
+    webhooks: Mapped[dict] = mapped_column(JSONB, default=dict)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    is_published: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class ConnectorRun(Base):
+    __tablename__ = "connector_runs"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    connection_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("integration_connections.id", ondelete="CASCADE"))
+    entity: Mapped[str] = mapped_column(Text)
+    direction: Mapped[str] = mapped_column(Text)  # pull | push | webhook | export
+    status: Mapped[str] = mapped_column(Text, default="running")
+    fetched: Mapped[int] = mapped_column(Integer, default=0)
+    created: Mapped[int] = mapped_column(Integer, default=0)
+    updated: Mapped[int] = mapped_column(Integer, default=0)
+    skipped: Mapped[int] = mapped_column(Integer, default=0)
+    failed: Mapped[int] = mapped_column(Integer, default=0)
+    cursor_before: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cursor_after: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sample_errors: Mapped[list] = mapped_column(JSONB, default=list)
+    started_at: Mapped[datetime] = ts(default=utcnow)
+    finished_at: Mapped[datetime | None] = ts(nullable=True)
+
+
+class ExternalOrder(Base):
+    __tablename__ = "external_orders"
+    __table_args__ = (UniqueConstraint("connection_id", "external_id"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    connection_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("integration_connections.id", ondelete="CASCADE"))
+    external_id: Mapped[str] = mapped_column(Text)
+    order_number: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contact_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK en la base
+    status: Mapped[str] = mapped_column(Text)  # pending|paid|fulfilled|cancelled|refunded
+    status_raw: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total: Mapped[float | None] = mapped_column(Numeric(16, 2), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    items: Mapped[list] = mapped_column(JSONB, default=list)
+    customer: Mapped[dict] = mapped_column(JSONB, default=dict)
+    attribution_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    placed_at: Mapped[datetime | None] = ts(nullable=True)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+    raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+class DataExport(Base):
+    __tablename__ = "data_exports"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    name: Mapped[str] = mapped_column(Text)
+    destination: Mapped[str] = mapped_column(Text)  # bigquery | s3 | gcs | sftp | download
+    config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    datasets: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    format: Mapped[str] = mapped_column(Text, default="parquet")
+    schedule: Mapped[str] = mapped_column(Text, default="daily")
+    incremental: Mapped[bool] = mapped_column(Boolean, default=True)
+    include_sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_export_at: Mapped[datetime | None] = ts(nullable=True)
+    last_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class DataExportRun(Base):
+    __tablename__ = "data_export_runs"
+
+    id: Mapped[int] = pk()
+    export_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("data_exports.id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(Text, default="running")
+    rows_exported: Mapped[int] = mapped_column(BigInteger, default=0)
+    bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    files: Mapped[list] = mapped_column(JSONB, default=list)
+    watermark: Mapped[datetime | None] = ts(nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = ts(default=utcnow)
+    finished_at: Mapped[datetime | None] = ts(nullable=True)

@@ -5,18 +5,20 @@ import type { AgentAdvanced } from "./agent-config-types";
  * se ajusta solo este archivo.
  */
 
-export type AIProvider = "anthropic" | "openai" | "openai_compatible" | "azure_openai";
+export type AIProvider = "anthropic" | "openai" | "openai_compatible" | "azure_openai" | "voyage";
 export const PROVIDER_LABEL: Record<AIProvider, string> = {
   anthropic: "Anthropic (Claude)",
   openai: "OpenAI",
   openai_compatible: "Compatible con OpenAI",
   azure_openai: "Azure OpenAI",
+  voyage: "Voyage AI (embeddings)",
 };
 export const MODEL_SUGGESTIONS: Record<AIProvider, string[]> = {
   anthropic: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"],
   openai: ["gpt-4.1", "gpt-4.1-mini"],
   openai_compatible: [],
   azure_openai: [],
+  voyage: ["voyage-3.5", "voyage-3.5-lite", "rerank-2.5"],
 };
 
 export type HealthState = "closed" | "open" | "half_open";
@@ -51,7 +53,7 @@ export type AIConnectionIn = Omit<AIConnection, "id" | "has_api_key" | "health">
 };
 
 export type CortexStrategy = "failover" | "lowest_latency" | "weighted";
-export type CortexPurpose = "chat" | "classification" | "learning" | "flow" | "json_edit" | "qa" | "agent_test" | "onboarding" | "golden" | "copilot" | "assistant" | "any";
+export type CortexPurpose = "chat" | "classification" | "learning" | "flow" | "json_edit" | "qa" | "agent_test" | "onboarding" | "golden" | "copilot" | "assistant" | "embedding" | "any";
 export type CortexMember = {
   connection_id: number;
   position: number;

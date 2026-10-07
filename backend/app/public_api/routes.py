@@ -896,3 +896,68 @@ async def sample(event: str, _: ApiContext = Depends(api_context)):
         raise ApiError(404, "Evento desconocido")
     return [SAMPLES[event]]
 
+
+
+# --- Journeys (§21.1) -----------------------------------------------------------------------
+class JourneyEnrollIn(BaseModel):
+    contact_id: int | None = None
+    phone: str | None = None
+    data: dict = Field(default_factory=dict)
+
+
+class JourneyEventIn(JourneyEnrollIn):
+    event: str = "form_submitted"
+
+
+async def _api_contact(session: AsyncSession, org: int, body: JourneyEnrollIn) -> Contact:
+    from app.routers.contacts import normalize_phone
+    from app.service import get_or_create_contact
+
+    if body.contact_id:
+        contact = await session.get(Contact, body.contact_id)
+        if contact is None or contact.organization_id != org:
+            raise ApiError(404, "Contacto no encontrado")
+        return contact
+    phone = normalize_phone(body.phone or "")
+    if not phone:
+        raise ApiError(422, "Indica `contact_id` o un `phone` válido")
+    contact, _ = await get_or_create_contact(session, org, phone)
+    await session.commit()
+    return contact
+
+
+@router.post("/journeys/{journey_id}/enroll", summary="Inscribir un cliente en un journey", status_code=200)
+async def enroll_journey(journey_id: int, body: JourneyEnrollIn,
+                         idem: Idempotency = Depends(idempotency("journeys:write")),
+                         session: AsyncSession = Depends(get_session)):
+    """El journey debe estar activo. `enrolled: false` si ya está inscrito o la regla de reingreso no lo permite."""
+    if idem.replay:
+        return idem.replay
+    from app.journeys import engine
+    from app.models import Journey
+
+    journey = await session.get(Journey, journey_id)
+    if journey is None or journey.organization_id != idem.org:
+        raise ApiError(404, "Journey no encontrado")
+    if journey.status != "active":
+        raise ApiError(409, "El journey no está activo")
+    contact = await _api_contact(session, idem.org, body)
+    e = await engine.enroll(session, journey, contact.id, "api", body.data or None)
+    return await idem.respond({"enrolled": e is not None, "enrollment_id": e.id if e else None,
+                               "contact_id": contact.id})
+
+
+@router.post("/journeys/events", summary="Enviar un evento (p. ej. formulario enviado)", status_code=200)
+async def journey_event(body: JourneyEventIn, idem: Idempotency = Depends(idempotency("journeys:write")),
+                        session: AsyncSession = Depends(get_session)):
+    """Inscribe al cliente en los journeys activos cuya entrada es este evento (y su filtro coincide)."""
+    if idem.replay:
+        return idem.replay
+    from app.journeys.schema import EVENTS
+    from app.journeys.scheduler import emit
+
+    if body.event not in EVENTS:
+        raise ApiError(422, f"Evento desconocido: {body.event}")
+    contact = await _api_contact(session, idem.org, body)
+    n = await emit(session, idem.org, contact.id, body.event, body.data)
+    return await idem.respond({"enrolled": n, "contact_id": contact.id})

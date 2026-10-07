@@ -618,6 +618,50 @@ Closes the Atom gap backlog (`docs/roadmap-atom-gaps.md`).
 - `system_check_runs`: history of runs (manual, CLI, deploy, schedule) with app version and pass/warn/fail counts
   to compare before and after a deploy.
 
+## 21. Marketing journeys, knowledge base with RAG, integrations hub (migrations 34–36)
+
+### 21.1 Segments and journeys (34)
+- `segments`: dynamic (rule tree over customer 360, golden keys, vehicles and due dates, consents, source, tags,
+  products, stages — JSON Schema-validated, compiled to SQL from a whitelist) or static; `segment_members`
+  materializes the last evaluation so "entered the segment" can trigger journeys; `member_count`,
+  `refresh_minutes`.
+- `journeys` (entry: segment enter/member, event, date field with offset such as SOAT due − 30 days, manual, API;
+  settings: re-entry policy, frequency caps per day/week, quiet hours, channel priority, required consent, goal +
+  window), `journey_versions` (step graph: send template / email / text, wait, wait until, branch on condition or
+  reply/click, A/B split, update contact, tag, create deal, move stage, notify agent, start flow, exit).
+- `journey_enrollments` (**partitioned**): one active per journey and contact; status, current step,
+  `next_run_at` (due index), stable A/B `variant`, context, exit reason. `journey_events` (**partitioned**, 13
+  months): entered / sent / delivered / read / replied / clicked / failed / branched / goal_met / exited per step and
+  variant. `messages.sender_type = journey` + `messages.journey_id`.
+- `reporting.daily_journeys` per journey, step and variant (A/B results); `refresh_range` includes journeys.
+
+### 21.2 Knowledge base with RAG (35)
+- `pgvector` (schema `extensions`). `knowledge_sources` (upload, website crawl, catalog, resolved conversations,
+  legacy `knowledge_docs`, FAQ, API; refresh interval; per-AI-agent availability) → `knowledge_documents` (checksum
+  to skip unchanged text, status, `valid_until` so expired promotions/prices are never used) →
+  `knowledge_chunks` (heading for citations, content, tokens, `embedding vector(1024)` with HNSW cosine index,
+  generated Spanish `fts` with GIN).
+- `knowledge_search(org, embedding, query, limit, source_ids)`: hybrid retrieval (vector + full-text, Reciprocal
+  Rank Fusion), only ready, active, non-expired documents.
+- `knowledge_queries` (**partitioned**, 6 months): query, results with scores, answered flag, latency →
+  `knowledge_gaps` (clustered unanswered questions with examples and occurrences; resolved by a document).
+- Embeddings: 1024 dimensions (Voyage AI `voyage-3.x` or OpenAI `text-embedding-3-*` with `dimensions=1024`).
+- Migration 35b (`20261016000500_knowledge_embeddings.sql`): `ai_connections.provider` adds `voyage`; AI purpose
+  `embedding` on `ai_calls` / `cortexes` (embedding + rerank cost reported separately).
+
+### 21.3 Integrations hub (36)
+- `integration_connections.provider` adds `shopify | woocommerce | vtex | google_calendar | microsoft_calendar |
+  zoho | odoo | bigquery | custom`, plus `label` and `connector_id`. One connection per provider for single-account
+  integrations; several labeled connections for stores and custom connectors.
+- `connector_definitions` (generic REST connector builder: base URL, auth type, endpoints with pagination, entity
+  mappings with JSONPath + transforms, webhooks) and `connector_runs` (pull / push / webhook / export with counts,
+  cursors, sample errors).
+- `external_orders` (store/ERP orders normalized: status, total, items, customer, link to contact and to the
+  attribution that originated it) → revenue attribution and journey goals.
+- `appointments.calendar_connection_id`, `external_event_id`, `calendar_synced_at` (Google Calendar / Outlook).
+- `data_exports` / `data_export_runs` (BigQuery, S3, GCS, SFTP or download; parquet/csv/jsonl; incremental
+  watermark; sensitive data excluded unless enabled).
+
 ## 11. Feature log (data-model changes)
 
 | Date | Feature | Model change |
@@ -631,6 +675,7 @@ Closes the Atom gap backlog (`docs/roadmap-atom-gaps.md`).
 | 2026-10-07 | Flow engine | No schema changes: uses `flows`, `flow_versions`, `flow_runs` (`context` = variables + resumable execution stack), `flow_run_steps`. Shared block catalog `blocks.json` |
 | 2026-10-08 | Phase 2 (model) | Attribution, CRM, voice and SaaS: migrations 11–14 (section 10) |
 | 2026-10-11 | Public API `/v1` + advisor PWA | Migration 20b: origin `api` (actor and sources) |
+| 2026-10-16 | Journeys, RAG knowledge base, integrations hub | Migrations 34–36 (§21): `segments`, `segment_members`, `journeys`, `journey_versions`, `journey_enrollments` + `journey_events` (partitioned), `messages.journey_id`, `reporting.daily_journeys`; pgvector `knowledge_sources/documents/chunks`, `knowledge_search`, `knowledge_queries` (partitioned), `knowledge_gaps`; connector builder, `connector_runs`, `external_orders`, calendar sync on appointments, `data_exports` |
 | 2026-10-15 | Go-live diagnostics | Migration 33 (§20): `system_checks`, `system_check_runs` |
 | 2026-10-14 | Atom gaps, scale-out, AI copilot | Migrations 30–32 (§19): email channel + `email_threads`, `call_permissions`, `wa_widgets`; voice node role, `calls.media_node_id`, `jobs` queue + `jobs_claim`; `copilot_suggestions` (partitioned), handoff/conversation summaries, assistant threads/messages, `reporting.daily_copilot` |
 | 2026-10-13 | Contact center, supervision, productivity, security | Migrations 26–29 (§18): agent statuses + status log + sessions, business hours per group + holidays, group routing rules, client owner, SLA automations + runs, conversation assignment fields; supervisor group role, `reporting.daily_service`, `daily_agent_status`; quick replies v2, `notifications` (partitioned), follow-up reminders, client-list campaigns; roles & permissions, SSO, 2FA, password policy/history/resets, `auth_events` (partitioned) |

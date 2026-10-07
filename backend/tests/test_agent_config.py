@@ -368,7 +368,7 @@ async def test_messages_listing_unaffected():
     async with SessionLocal() as s:
         last = (await s.scalars(select(Message).where(Message.type == "template")
                                 .order_by(Message.created_at.desc()).limit(1))).first()
-    assert last is None or last.sender_type in ("bot", "agent", "campaign")
+    assert last is None or last.sender_type in ("bot", "agent", "campaign", "flow", "journey")  # journeys también envían plantillas
 
 
 @pytest.fixture(autouse=True)

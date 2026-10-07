@@ -49,3 +49,7 @@ async def ads_enrich(payload: dict) -> dict:
     from app.ad_enrichment import enrich_id
 
     return {"status": await enrich_id(int(payload["attribution_id"]))}
+
+
+import app.knowledge.jobs  # noqa: E402,F401  (knowledge.sync_source / knowledge.index_document, cola ai)
+import app.hub.jobs  # noqa: E402,F401  (hub.sync_connection cola crm / hub.export: tiendas, calendarios, exportaciones)

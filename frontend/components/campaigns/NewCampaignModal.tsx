@@ -7,11 +7,13 @@ import { Badge, ErrorBox, Field, Loading, Modal, useAction, useApi } from "@/com
 export default function NewCampaignModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const templates = useApi<Template[]>("/api/templates");
   const tags = useApi<{ tag: string; count: number }[]>("/api/contacts/tags");
+  const segments = useApi<{ id: number; name: string; member_count: number }[]>("/api/segments");
   const [name, setName] = useState("");
   const [tplKey, setTplKey] = useState("");
   const [values, setValues] = useState<string[]>([]);
-  const [audience, setAudience] = useState<"tag" | "phones">("tag");
+  const [audience, setAudience] = useState<"tag" | "segment" | "phones">("tag");
   const [tag, setTag] = useState("");
+  const [segmentId, setSegmentId] = useState("");
   const [phones, setPhones] = useState("");
   const [created, setCreated] = useState<Campaign | null>(null);
   const [run, busy, error] = useAction();
@@ -30,7 +32,7 @@ export default function NewCampaignModal({ onClose, onDone }: { onClose: () => v
 
   const phoneList = phones.split(/\n|,|;/).map((p) => p.trim()).filter(Boolean);
   const ready =
-    name.trim() && tpl && values.every((v) => v.trim()) && (audience === "tag" ? !!tag : phoneList.length > 0);
+    name.trim() && tpl && values.every((v) => v.trim()) && (audience === "tag" ? !!tag : audience === "segment" ? !!segmentId : phoneList.length > 0);
 
   async function create() {
     if (!tpl) return;
@@ -40,7 +42,11 @@ export default function NewCampaignModal({ onClose, onDone }: { onClose: () => v
         template_name: tpl.name,
         template_language: tpl.language,
         params: values,
-        ...(audience === "tag" ? { tag } : { phones: phoneList }),
+        ...(audience === "tag"
+          ? { tag }
+          : audience === "segment"
+            ? { segment_id: Number(segmentId) }
+            : { phones: phoneList }),
       }),
     );
     if (c) {
@@ -156,6 +162,9 @@ export default function NewCampaignModal({ onClose, onDone }: { onClose: () => v
             <input type="radio" checked={audience === "tag"} onChange={() => setAudience("tag")} /> Por etiqueta
           </label>
           <label className="inline">
+            <input type="radio" checked={audience === "segment"} onChange={() => setAudience("segment")} /> Por segmento
+          </label>
+          <label className="inline">
             <input type="radio" checked={audience === "phones"} onChange={() => setAudience("phones")} /> Lista de números
           </label>
         </div>
@@ -166,6 +175,15 @@ export default function NewCampaignModal({ onClose, onDone }: { onClose: () => v
           {tags.data?.map((t) => (
             <option key={t.tag} value={t.tag}>
               {t.tag} ({t.count} contactos)
+            </option>
+          ))}
+        </select>
+      ) : audience === "segment" ? (
+        <select value={segmentId} onChange={(e) => setSegmentId(e.target.value)}>
+          <option value="">Selecciona un segmento</option>
+          {segments.data?.map((sg) => (
+            <option key={sg.id} value={sg.id}>
+              {sg.name} ({sg.member_count} clientes)
             </option>
           ))}
         </select>
