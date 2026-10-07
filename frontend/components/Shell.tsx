@@ -16,6 +16,7 @@ import {
 import { NAV, type NavEntry } from "@/lib/nav";
 import { RealtimeProvider, useRealtime, useRealtimeStatus } from "@/lib/realtime";
 import type { PlanStatus } from "@/lib/saas-types";
+import { ONBOARDING_SKIP_KEY, type OnboardingState } from "@/lib/onboarding-types";
 import { OrgSwitcher } from "@/components/saas/OrgSwitcher";
 import { PlanBanner } from "@/components/saas/PlanBanner";
 import { IncomingCallManager } from "@/components/voice/IncomingCallManager";
@@ -98,6 +99,23 @@ function Shell({ me, setMe, children }: { me: Agent; setMe: (a: Agent) => void; 
   useEffect(() => {
     api<PlanStatus>("/api/plan").then(setPlan, () => setPlan(null));
   }, []);
+
+  // Empresa sin configurar: el administrador va al asistente (una vez por sesión; «Guardar y salir» lo respeta)
+  useEffect(() => {
+    if (!isAdmin) return;
+    try {
+      if (sessionStorage.getItem(ONBOARDING_SKIP_KEY) || sessionStorage.getItem("onboarding_checked")) return;
+      sessionStorage.setItem("onboarding_checked", "1");
+    } catch {
+      return;
+    }
+    api<OnboardingState>("/api/onboarding").then(
+      (s) => {
+        if (!s.org.onboarding_completed_at) router.replace("/onboarding");
+      },
+      () => undefined,
+    );
+  }, [isAdmin, router]);
 
   useRealtime((event) => {
     if (event === "alert.new") setAlerts((n) => n + 1);

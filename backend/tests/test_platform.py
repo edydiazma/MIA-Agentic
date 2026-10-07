@@ -72,9 +72,9 @@ async def test_blocked_and_ctwa(client):
     await settle()
     conv = await _conv(c, phone)
     assert conv["ad_source_type"] == "ad" and conv["ad_headline"] == "Chevrolet Onix 0 km"
-    assert FakeChat.requests[-1].context.endswith("«Chevrolet Onix 0 km».")
+    assert "«Chevrolet Onix 0 km»" in FakeChat.requests[-1].context  # bloque «Origen del cliente» (§17)
     ctwa = (await c.get("/api/reports/ctwa")).json()
-    assert ctwa["ads"][0]["ad_id"] == "AD123"
+    assert any(a["ad_id"] == "AD123" for a in ctwa["ads"])  # otras pruebas también crean anuncios en la org 1
 
     contact_id = conv["contact"]["id"]
     await c.post(f"/api/contacts/{contact_id}/block", json={"reason": "spam"})
@@ -86,7 +86,8 @@ async def test_blocked_and_ctwa(client):
     blocked = (await c.get("/api/contacts", params={"blocked": True})).json()
     assert blocked["items"][0]["wa_id"] == phone
     await c.post(f"/api/contacts/{contact_id}/unblock")
-    assert (await c.get("/api/contacts", params={"blocked": True})).json()["total"] == 0
+    still = (await c.get("/api/contacts", params={"blocked": True})).json()["items"]
+    assert all(x["wa_id"] != phone for x in still)  # otras pruebas pueden dejar contactos bloqueados en la org 1
 
 
 async def test_statuses_billing_optout_and_meta_alerts(client):

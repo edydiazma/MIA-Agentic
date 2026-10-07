@@ -253,7 +253,7 @@ async def run_chat(session: AsyncSession, cx: Cortex, req: AgentRequest, execute
     return await _execute(session, cx, ctx, attempt)
 
 
-async def complete_json(session: AsyncSession, cx: Cortex, system: str, user: str, schema: dict, ctx: CallContext,
+async def complete_json(session: AsyncSession, cx: Cortex, system: str, user, schema: dict, ctx: CallContext,
                         max_tokens: int = 4000) -> dict:
     async def attempt(conn: ResolvedConnection):
         return await _complete_json(conn, system, user, schema, max_tokens=int(conn.params.get("max_tokens") or max_tokens))

@@ -56,6 +56,17 @@ class FieldIn(BaseModel):
     ai_extract: bool = True
     agent_editable: bool = True
     position: int = 100
+    # Organización (registro maestro, §15): None = no cambia
+    section: str | None = None
+    scope: str | None = None  # contact | deal | vehicle | appointment | flow
+    pipeline: str | None = None  # línea de negocio si scope = deal
+    maps_to: str | None = None  # llave maestra (document, plate…) o atributo (vehicle.mileage_km, consent.x, deal.x)
+    aliases: list[str] | None = None
+    show_in_card: bool | None = None
+    currency: str | None = None
+
+
+ORG_KEYS = ("section", "scope", "pipeline", "maps_to", "aliases", "show_in_card", "currency")
 
 
 class FieldOut(FieldIn):
@@ -202,11 +213,31 @@ def _validate_field(body: FieldIn) -> None:
         raise HTTPException(422, "Una lista necesita opciones")
     if not body.label.strip():
         raise HTTPException(422, "El nombre visible es obligatorio")
+    from app.golden.fields import validate_organization
+
+    try:
+        validate_organization(body.scope, body.pipeline, body.maps_to)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
 
 
 def _field_out(f: ContactField) -> FieldOut:
     return FieldOut(id=f.id, key=f.key, label=f.label, type=f.type, options=f.options, description=f.description,
-                    ai_extract=f.ai_extract, agent_editable=f.agent_editable, position=f.position)
+                    ai_extract=f.ai_extract, agent_editable=f.agent_editable, position=f.position, section=f.section,
+                    scope=f.scope, pipeline=f.pipeline, maps_to=f.maps_to, aliases=list(f.aliases or []),
+                    show_in_card=f.show_in_card, currency=f.currency)
+
+
+def _field_values(body: FieldIn) -> dict:
+    """Campos del cuerpo a guardar (los de organización solo si vienen)."""
+    data = body.model_dump(exclude=set(ORG_KEYS))
+    for k in ORG_KEYS:
+        v = getattr(body, k)
+        if v is not None:
+            data[k] = [a.strip() for a in v if a and a.strip()] if k == "aliases" else v
+    if data.get("scope") and data["scope"] != "deal":
+        data.setdefault("pipeline", None)
+    return data
 
 
 @router.get("/contact-fields", response_model=list[FieldOut])
@@ -227,11 +258,11 @@ async def create_field(body: FieldIn, agent: Agent = Depends(require_admin), ses
         raise HTTPException(409, "Ya existe un campo con esa clave")
     if existing:  # se reactiva un campo archivado (conserva sus valores)
         f = existing
-        for k, v in body.model_dump().items():
+        for k, v in _field_values(body).items():
             setattr(f, k, v)
         f.options, f.archived_at = options, None
     else:
-        f = ContactField(organization_id=agent.organization_id, **{**body.model_dump(), "options": options})
+        f = ContactField(organization_id=agent.organization_id, **{**_field_values(body), "options": options})
         session.add(f)
     await session.commit()
     return _field_out(f)
@@ -253,9 +284,11 @@ async def update_field(fid: int, body: FieldIn, agent: Agent = Depends(require_a
         raise HTTPException(422, "La clave no se puede cambiar (los valores guardados dependen de ella)")
     if body.type != f.type:
         raise HTTPException(422, "El tipo no se puede cambiar: crea un campo nuevo")
-    for k, v in body.model_dump().items():
+    for k, v in _field_values(body).items():
         setattr(f, k, v)
     f.options = [o.strip() for o in body.options or [] if o.strip()] or None
+    if f.scope == "deal" and not f.pipeline:
+        raise HTTPException(422, "Un campo de oportunidad necesita la línea de negocio (pipeline)")
     await session.commit()
     return _field_out(f)
 

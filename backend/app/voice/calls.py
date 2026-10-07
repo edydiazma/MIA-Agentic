@@ -122,7 +122,8 @@ async def on_connect(phone_number_id: str, payload: dict, profile_name: str | No
             return None  # Meta reintenta: idempotente
         org = channel.organization_id
         await set_actor(session, "contact")
-        contact, _ = await get_or_create_contact(session, org, payload["from"], profile_name)
+        contact, _ = await get_or_create_contact(session, org, payload.get("from"), profile_name,
+                                                 bsuid=payload.get("from_user_id"))
         conv = await get_or_create_conversation(session, channel, contact)
         call = Call(organization_id=org, channel_id=channel.id, contact_id=contact.id, conversation_id=conv.id,
                     wa_call_id=payload["id"], direction="inbound", status="ringing")

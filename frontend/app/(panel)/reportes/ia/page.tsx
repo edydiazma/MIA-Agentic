@@ -15,6 +15,7 @@ const PURPOSE: Record<string, string> = {
   json_edit: "Edición JSON",
   qa: "Calidad (QA)",
   agent_test: "Pruebas de agentes",
+  onboarding: "Onboarding",
   test: "Pruebas",
 };
 const usd = (n: number) => `US$ ${n.toLocaleString("es", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`;

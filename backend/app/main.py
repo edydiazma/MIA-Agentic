@@ -34,7 +34,17 @@ ROUTERS = ["webhook", "auth", "inbox", "bots", "knowledge", "contacts", "campaig
            # Fase 4: calidad (QA), coaching y pruebas de agentes
            "quality", "agent_tests",
            # Fase 4: omnicanal (Messenger, Instagram, chat web)
-           "omnichannel", "webchat", "channel_reports", "meta_webhook"]
+           "omnichannel", "webchat", "channel_reports", "meta_webhook",
+           # Asistente de onboarding y configuración automática
+           "onboarding", "invitations",
+           # Cliente 360: productos por interacción
+           "interaction_products", "customer_reports",
+           # Rastreo por anuncio: rendimiento e inversión
+           "ads",
+           # Agente avanzado: etapas y tipificaciones; webhooks entrantes (panel y público)
+           "pipeline_stages", "inbound_webhooks", "hooks_public",
+           # Registro maestro: llaves, vehículos, consentimientos, duplicados y organización de campos
+           "golden"]
 
 
 async def bootstrap(org: int | None = None) -> None:
@@ -106,6 +116,11 @@ LOOPS = [
     "app.crm.sync:crm_loop",  # sincroniza HubSpot / Salesforce (outbox + pull)
     "app.ad_enrichment:enrichment_loop",  # nombres de campaña/anuncio (Meta) y de clic (Google Ads)
     "app.quality.hooks:quality_loop",  # revisiones QA de conversaciones cerradas que no pasaron por service.close
+    "app.onboarding.hooks:health_checks_loop",  # valida los números (6 h) y plantillas pendientes (10 min)
+    "app.ad_enrichment:ads_catalog_loop",  # anuncios de Meta (cruce publicación → anuncio), cada 6 h
+    "app.ads.spend:spend_loop",  # inversión por anuncio y día (Meta Insights, Google Ads), cada hora
+    "app.golden.hooks:golden_loop",  # documentos pendientes (1 min) y oportunidades por vehículo (6 h)
+    "app.recovery:recovery_loop",  # recuperación por inactividad del agente de IA (intentos + fin)
 ]
 
 

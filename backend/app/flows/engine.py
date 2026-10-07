@@ -26,10 +26,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal, set_actor
+from app.identity import wa_address
 from app.flows.catalog import HTTP_TIMEOUT_S, MAX_REPEAT, MAX_STEPS, OTHER_BRANCH
 from app.models import (
     Agent,
-    ContactField,
     Conversation,
     Flow,
     FlowRun,
@@ -303,7 +303,7 @@ class Runner:
                 self.sim.messages.append({"text": inputs.get("text"), "buttons": [b["title"] for b in buttons]})
             else:
                 client = await self._client()
-                wid = await client.send_buttons(self.conv.contact.wa_id, str(inputs.get("text", "")), buttons)
+                wid = await client.send_buttons(wa_address(self.conv.contact), str(inputs.get("text", "")), buttons)
                 await self._record(Message(direction="out", sender_type="flow", type="interactive",
                                            text=str(inputs.get("text", "")), wa_message_id=wid, status="sent",
                                            metadata_={"buttons": [b["title"] for b in buttons]}))
@@ -315,7 +315,7 @@ class Runner:
                 self.sim.messages.append({"text": inputs.get("text"), "list": [r["title"] for r in rows]})
             else:
                 client = await self._client()
-                wid = await client.send_list(self.conv.contact.wa_id, str(inputs.get("text", "")),
+                wid = await client.send_list(wa_address(self.conv.contact), str(inputs.get("text", "")),
                                              str(inputs.get("button", "Ver opciones")), [{"title": "Opciones", "rows": rows}])
                 await self._record(Message(direction="out", sender_type="flow", type="interactive",
                                            text=str(inputs.get("text", "")), wa_message_id=wid, status="sent",
@@ -330,7 +330,7 @@ class Runner:
                 if not str(inputs.get("url", "")).startswith("https://"):
                     raise FlowError("Indica un recurso o una URL https")
                 client = await self._client()
-                wid = await client.send_image_link(self.conv.contact.wa_id, str(inputs["url"]), inputs.get("caption"))
+                wid = await client.send_image_link(wa_address(self.conv.contact), str(inputs["url"]), inputs.get("caption"))
                 await self._record(Message(direction="out", sender_type="flow", type="image", text=inputs.get("caption"),
                                            wa_message_id=wid, status="sent", metadata_={"url": inputs["url"]}))
                 return None, {"url": inputs["url"]}
@@ -343,7 +343,7 @@ class Runner:
             client = await self._client()
             kind = kind_for_mime(res.mime)
             media_id = await client.upload_media(data, res.mime, res.name)
-            wid = await client.send_media(self.conv.contact.wa_id, kind, media_id, inputs.get("caption"), res.name)
+            wid = await client.send_media(wa_address(self.conv.contact), kind, media_id, inputs.get("caption"), res.name)
             await self._record(Message(direction="out", sender_type="flow", type=kind, text=inputs.get("caption"),
                                        media_path=res.storage_path, media_mime=res.mime, media_filename=res.name,
                                        wa_message_id=wid, status="sent"))
@@ -387,13 +387,19 @@ class Runner:
             client = await self._client()
             caption = cat.describe(product)[:1000]
             if product.image_url:
-                wid = await client.send_image_link(self.conv.contact.wa_id, product.image_url, caption)
+                wid = await client.send_image_link(wa_address(self.conv.contact), product.image_url, caption)
                 msg_type = "image"
             else:
-                wid = (await client.send_text(self.conv.contact.wa_id, caption))[0]
+                wid = (await client.send_text(wa_address(self.conv.contact), caption))[0]
                 msg_type = "text"
-            await self._record(Message(direction="out", sender_type="flow", type=msg_type, text=caption,
-                                       wa_message_id=wid, status="sent", metadata_={"sku": product.sku}))
+            sent = Message(direction="out", sender_type="flow", type=msg_type, text=caption, wa_message_id=wid,
+                           status="sent", metadata_={"sku": product.sku})
+            await self._record(sent)
+            from app.interaction_products import add_product
+
+            await add_product(self.session, self.conv, stage="quoted", source="catalog_message",
+                              product_id=product.id, message_id=sent.id)
+            await self.session.commit()
             return None, {"sku": product.sku}
 
         # Esperas
@@ -506,19 +512,62 @@ class Runner:
         # CRM
         if t == "set_field":
             if not dry:
-                from app.fields import coerce, set_custom
+                from app.golden.fields import resolve_field, write_value
 
-                field_ = await self.session.scalar(select(ContactField).where(
-                    ContactField.organization_id == self.conv.organization_id, ContactField.key == str(inputs["field"])))
+                # Acepta la clave, la etiqueta o un alias (nombres heredados de Atom, otros bots…)
+                field_ = await resolve_field(self.session, self.conv.organization_id, str(inputs["field"]))
                 if not field_:
                     raise FlowError(f"Campo inexistente: {inputs['field']}")
                 try:
-                    value = coerce(field_, inputs.get("value"))
+                    where = await write_value(self.session, self.conv.contact, field_, inputs.get("value"), "flow",
+                                              conversation_id=self.conv.id)
                 except ValueError as e:
                     raise FlowError(str(e)) from e
-                await set_custom(self.session, self.conv.contact, field_, value, "flow", conversation_id=self.conv.id)
+                if where == "flow":  # variable de trabajo del bot: queda en la ejecución, no en el cliente
+                    self.ctx.setdefault("vars", {})[field_.key] = inputs.get("value")
                 await self.session.commit()
+                return None, {"field": field_.key, "value": inputs.get("value"), "stored_in": where}
             return None, {"field": inputs.get("field"), "value": inputs.get("value")}
+        if t == "record_consent":  # registro maestro: consentimiento con la última respuesta del cliente
+            from app.golden.records import RecordError, parse_yes_no, record_consent
+
+            reply = self.ctx.get("last_reply", "")
+            granted = parse_yes_no(reply)
+            ctype = str(inputs.get("consent_type") or "habeas_data")
+            if dry:
+                self.sim.messages.append({"text": f"[consentimiento {ctype}: {granted}]"})
+                return None, {"consent_type": ctype, "granted": granted}
+            if granted is None:
+                return None, {"consent_type": ctype, "granted": None, "reply": reply[:200]}
+            try:
+                await record_consent(self.session, self.conv.contact, ctype, granted, source="flow",
+                                     policy_version=inputs.get("policy_version") or None,
+                                     channel_id=self.conv.channel_id, conversation_id=self.conv.id,
+                                     evidence=reply[:500])
+            except RecordError as e:
+                raise FlowError(str(e)) from e
+            await self.session.commit()
+            return None, {"consent_type": ctype, "granted": granted}
+        if t == "register_product":  # Cliente 360: producto por interacción (catálogo o código externo)
+            from app.interaction_products import STAGES, ProductError, add_product, find_product
+
+            stage = str(inputs.get("stage") or "interested")
+            if stage not in STAGES:
+                raise FlowError("Etapa de producto inválida")
+            ref = str(inputs.get("product") or "").strip()
+            external = str(inputs.get("external_ref") or "").strip() or None
+            if dry:
+                self.sim.messages.append({"text": f"[producto registrado: {ref} ({stage})]"})
+                return None, {"product": ref, "stage": stage}
+            product = await find_product(self.session, self.conv.organization_id, ref)
+            try:
+                row, _ = await add_product(self.session, self.conv, stage=stage, source="flow",
+                                           product_id=product.id if product else None, external_ref=external,
+                                           name=None if product else ref)
+            except ProductError as e:
+                raise FlowError(str(e)) from e
+            await self.session.commit()
+            return None, {"product": row.name, "stage": stage, "product_id": row.product_id}
         if t in ("set_stage", "update_memory"):
             if not dry:
                 from app.fields import set_native
@@ -665,11 +714,14 @@ def script_matches(script: dict, trigger_type: str, text: str | None) -> bool:
 
 
 async def start_run(session: AsyncSession, flow: Flow, version: FlowVersion, script_index: int,
-                    conv: Conversation | None, trigger_type: str, text: str | None) -> FlowRun:
+                    conv: Conversation | None, trigger_type: str, text: str | None,
+                    initial_vars: dict | None = None) -> FlowRun:
+    variables = {v["name"]: v.get("default") for v in version.definition.get("variables") or []}
+    variables.update(initial_vars or {})  # p. ej. parámetros de un webhook entrante
     run = FlowRun(organization_id=flow.organization_id, flow_id=flow.id, flow_version_id=version.id,
                   conversation_id=getattr(conv, "id", None), contact_id=getattr(conv, "contact_id", None),
                   trigger_type=trigger_type, status="running",
-                  context={"vars": {v["name"]: v.get("default") for v in version.definition.get("variables") or []},
+                  context={"vars": variables,
                            "frames": [{"path": ["scripts", script_index, "blocks"], "i": 0, "repeat_left": 0}],
                            "script_id": version.definition["scripts"][script_index]["id"], "last_reply": text or "",
                            "steps": 0})

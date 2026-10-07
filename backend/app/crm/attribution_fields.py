@@ -34,14 +34,62 @@ FIELDS = {
     "attribution.first_touch_at": "Primer toque: fecha",
     "attribution.last_touch_at": "Último toque: fecha",
     "attribution.touches": "Toques",
+    # Fuente del cliente por anuncio (docs/data-model.md §16)
+    "attribution.first_source_label": "Fuente (primer toque)",
+    "attribution.first_source_campaign": "Campaña de origen",
+    "attribution.first_source_ad_id": "Anuncio de origen (ID)",
+    "attribution.last_source_label": "Última fuente",
+    "attribution.ad_headline": "Título del anuncio",
+}
+
+
+# Cliente 360 (docs/data-model.md §14): también solo push, mismo mecanismo que attribution.*
+CUSTOMER_PREFIX = "customer."
+CUSTOMER_FIELDS = {
+    "customer.wa_username": "Usuario de WhatsApp",
+    "customer.wa_bsuid": "ID de WhatsApp (BSUID)",
+    "customer.first_interaction_at": "Primera interacción",
+    "customer.last_interaction_at": "Última interacción",
+    "customer.conversations_count": "Conversaciones",
+    "customer.products": "Productos de interés",
+    "customer.last_typification": "Última tipificación",
 }
 
 
 def is_attribution(field: str) -> bool:
-    return field.startswith(PREFIX)
+    """Campos calculados que solo se envían al CRM (atribución y cliente 360)."""
+    return field.startswith(PREFIX) or field.startswith(CUSTOMER_PREFIX)
+
+
+async def load_customer(session: AsyncSession, contact_id: int) -> dict:
+    from app.models import Contact, InteractionProduct, Typification
+
+    c = await session.get(Contact, contact_id)
+    if c is None:
+        return {}
+    names = (await session.scalars(
+        select(InteractionProduct.name).where(InteractionProduct.contact_id == contact_id)
+        .order_by(InteractionProduct.created_at.desc()).limit(50))).all()
+    products = list(dict.fromkeys(names))[:20]
+    typ = await session.get(Typification, c.last_typification_id) if c.last_typification_id else None
+    return {
+        "customer.wa_username": c.wa_username,
+        "customer.wa_bsuid": c.wa_bsuid,
+        "customer.first_interaction_at": c.first_interaction_at.isoformat() if c.first_interaction_at else None,
+        "customer.last_interaction_at": c.last_interaction_at.isoformat() if c.last_interaction_at else None,
+        "customer.conversations_count": c.conversations_count,
+        "customer.products": ", ".join(products) or None,
+        "customer.last_typification": typ.name if typ else None,
+    }
 
 
 async def load(session: AsyncSession, contact_id: int, conversation_id: int | None = None) -> dict:
+    """Valores de todos los campos attribution.* y customer.*."""
+    customer = await load_customer(session, contact_id)
+    return {**customer, **await _load_attribution(session, contact_id, conversation_id)}
+
+
+async def _load_attribution(session: AsyncSession, contact_id: int, conversation_id: int | None = None) -> dict:
     """Valores de todos los campos attribution.* (vacío si el contacto no tiene atribución)."""
     q = select(Attribution).where(Attribution.contact_id == contact_id)
     attr = None
@@ -51,6 +99,9 @@ async def load(session: AsyncSession, contact_id: int, conversation_id: int | No
         attr = (await session.scalars(q.order_by(Attribution.created_at.desc(), Attribution.id.desc()).limit(1))).first()
     if attr is None:
         return {}
+    from app.models import Contact
+
+    contact = await session.get(Contact, contact_id)
     first = None
     if attr.first_touch_id:
         first = (await session.scalars(select(AttributionTouch).where(
@@ -82,6 +133,11 @@ async def load(session: AsyncSession, contact_id: int, conversation_id: int | No
         "attribution.first_touch_at": (first.occurred_at if first else attr.created_at).isoformat(),
         "attribution.last_touch_at": (attr.last_touch_at or attr.created_at).isoformat(),
         "attribution.touches": attr.touches or 1,
+        "attribution.first_source_label": contact.first_source_label if contact else None,
+        "attribution.first_source_campaign": contact.first_source_campaign if contact else None,
+        "attribution.first_source_ad_id": contact.first_source_ad_id if contact else None,
+        "attribution.last_source_label": contact.last_source_label if contact else None,
+        "attribution.ad_headline": attr.ad_headline,
     }
 
 

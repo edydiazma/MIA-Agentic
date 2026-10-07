@@ -71,6 +71,25 @@ class ContactOut(BaseModel):
     blocked_at: UTCDateTime | None = None
     marketing_opt_out: bool = False
     created_at: UTCDateTime | None = None
+    # Identidad de WhatsApp sin teléfono y métricas de interacción (docs/data-model.md §14)
+    wa_username: str | None = None
+    wa_bsuid: str | None = None
+    channel_providers: list[str] = []
+    updated_at: UTCDateTime | None = None
+    first_interaction_at: UTCDateTime | None = None
+    first_inbound_at: UTCDateTime | None = None
+    last_interaction_at: UTCDateTime | None = None
+    last_inbound_at: UTCDateTime | None = None
+    last_outbound_at: UTCDateTime | None = None
+    messages_in: int = 0
+    messages_out: int = 0
+    conversations_count: int = 0
+    flow_runs_count: int = 0
+    last_flow_at: UTCDateTime | None = None
+    products_count: int = 0
+    last_product_name: str | None = None
+    lifetime_days: float | None = None
+    days_since_last_interaction: float | None = None
 
 
 class ContactUpdate(BaseModel):
@@ -153,6 +172,21 @@ class BotOut(BaseModel):
     use_customer_memory: bool
     use_catalog: bool
     use_appointments: bool
+    # Configuración avanzada (§17)
+    timezone: str | None = None
+    max_words: int | None = None
+    ad_context_enabled: bool = True
+    ad_context_prompt: str | None = None
+    source_rules: list[dict] = []
+    cost_optimization: bool = True
+    security_enabled: bool = True
+    security_prompt: str | None = None
+    security_action: str = "close"
+    recovery_enabled: bool = False
+    recovery_attempts: list[dict] = []
+    inactivity_end_hours: float | None = None
+    inactivity_end_typification_id: int | None = None
+    extract_field_ids: list[int] = []
     channel_ids: list[int] = []
 
 
@@ -168,3 +202,17 @@ class BotUpdate(BaseModel):
     use_customer_memory: bool | None = None
     use_catalog: bool | None = None
     use_appointments: bool | None = None
+    timezone: str | None = None
+    max_words: int | None = None
+    ad_context_enabled: bool | None = None
+    ad_context_prompt: str | None = None
+    source_rules: list[dict] | None = None
+    cost_optimization: bool | None = None
+    security_enabled: bool | None = None
+    security_prompt: str | None = None
+    security_action: str | None = None
+    recovery_enabled: bool | None = None
+    recovery_attempts: list[dict] | None = None
+    inactivity_end_hours: float | None = None
+    inactivity_end_typification_id: int | None = None
+    extract_field_ids: list[int] | None = None

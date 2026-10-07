@@ -53,6 +53,9 @@ def _blocks_errors(blocks, path: str, ids: set[str], script_ids: set[str], depth
             errors.append({"path": f"{p}.inputs.items", "message": "Máximo 10 opciones", "block_id": bid})
         if btype == "send_media" and not (inputs.get("resource_id") or inputs.get("url")):
             errors.append({"path": f"{p}.inputs", "message": "Indica un recurso o una URL", "block_id": bid})
+        if btype == "register_product" and inputs.get("stage") not in (
+                None, "", "mentioned", "interested", "quoted", "purchased", "not_interested"):
+            errors.append({"path": f"{p}.inputs.stage", "message": "Etapa de producto inválida", "block_id": bid})
         if btype == "repeat" and not 1 <= int(inputs.get("times") or 0) <= 20:
             errors.append({"path": f"{p}.inputs.times", "message": "Entre 1 y 20 repeticiones", "block_id": bid})
         if btype == "http_request" and not str(inputs.get("url", "")).startswith("https://"):

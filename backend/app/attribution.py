@@ -46,9 +46,79 @@ MIN_TRIGGER_KEY = 8  # textos más cortos ("hola") no identifican un enlace
 SESSION_FIELDS = ("utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "gclid", "gbraid", "wbraid",
                   "fbc", "fbp")
 UTM_FIELDS = ("utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term")
-VALUE_FIELDS = (*SESSION_FIELDS, "ctwa_clid", "ad_id", "landing_url")
+# Creativo y publicación del referral de Meta (docs/data-model.md §16)
+CREATIVE_FIELDS = ("source_type", "page_id", "post_id", "ad_headline", "ad_body", "ad_media_type", "ad_media_url",
+                   "ad_thumbnail_url", "source_url")
+VALUE_FIELDS = (*SESSION_FIELDS, "ctwa_clid", "ad_id", "landing_url", *CREATIVE_FIELDS)
 ENRICHED_FIELDS = ("platform_campaign_id", "platform_campaign_name", "ad_group_id", "ad_group_name", "ad_name",
                    "keyword")
+
+
+_IG_POST_RE = re.compile(r"instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_\-]+)", re.IGNORECASE)
+_FB_POSTS_RE = re.compile(r"facebook\.com/([^/?#]+)/(?:posts|videos)/(?:[^/?#]+/)?(\d+)", re.IGNORECASE)
+
+
+def parse_source_url(url: str | None) -> dict:
+    """page_id y post_id ("{page_id}_{post_id}", el formato de effective_object_story_id) de la URL del referral.
+
+    Formatos: story.php?story_fbid=X&id=PAGE · ?post_id=PAGE_X · permalink.php?story_fbid=X&id=PAGE ·
+    /PAGE/posts/X (PAGE puede ser un alias: solo se conserva si es numérico) · instagram.com/p/<código> → "ig:<código>".
+    Enlaces cortos (fb.me) no traen ids: se guarda solo la URL."""
+    from urllib.parse import parse_qs, urlparse
+
+    out: dict = {"page_id": None, "post_id": None}
+    if not url:
+        return out
+    m = _IG_POST_RE.search(url)
+    if m:
+        out["post_id"] = f"ig:{m.group(1)}"
+        return out
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return out
+    q = {k: v[0] for k, v in parse_qs(parsed.query).items() if v}
+    post = q.get("post_id")
+    if post and re.fullmatch(r"\d+_\d+", post):
+        out["page_id"], out["post_id"] = post.split("_")[0], post
+        return out
+    story, page = q.get("story_fbid"), q.get("id")
+    if story and page and story.isdigit() and page.isdigit():
+        out["page_id"], out["post_id"] = page, f"{page}_{story}"
+        return out
+    m = _FB_POSTS_RE.search(url)
+    if m:
+        alias, story = m.group(1), m.group(2)
+        if alias.isdigit():
+            out["page_id"], out["post_id"] = alias, f"{alias}_{story}"
+    return out
+
+
+def referral_values(referral: dict) -> dict:
+    """Creativo + publicación del referral (WhatsApp; Messenger/Instagram llegan normalizados por ingest)."""
+    source_type = (referral.get("source_type") or "").lower() or None
+    url = referral.get("source_url")
+    vals = {"source_type": source_type, "source_url": url, "ctwa_clid": referral.get("ctwa_clid"),
+            "landing_url": url, "ad_headline": (referral.get("headline") or None),
+            "ad_body": (referral.get("body") or None), "ad_media_type": (referral.get("media_type") or None),
+            "ad_media_url": referral.get("image_url") or referral.get("video_url"),
+            "ad_thumbnail_url": referral.get("thumbnail_url") or referral.get("image_url")}
+    for k in ("ad_headline", "ad_body"):
+        if vals[k]:
+            vals[k] = str(vals[k])[:1000]
+    vals.update(parse_source_url(url))
+    source_id = str(referral.get("source_id") or "") or None
+    if source_type == "post":
+        if source_id and not vals.get("post_id"):  # source_id de una publicación: "{page}_{post}" o solo el post
+            vals["post_id"] = source_id if "_" in source_id or not vals.get("page_id") \
+                else f"{vals['page_id']}_{source_id}"
+        if vals.get("post_id") and not vals.get("page_id") and "_" in vals["post_id"] \
+                and not vals["post_id"].startswith("ig:"):
+            vals["page_id"] = vals["post_id"].split("_")[0]
+        vals["ad_id"] = None  # una publicación no es un anuncio: el enriquecimiento busca el anuncio que la promocionó
+    else:
+        vals["ad_id"] = source_id
+    return vals
 
 
 def new_ref_code() -> str:
@@ -140,18 +210,18 @@ class Signal:
 
     def key(self) -> tuple:
         return (self.matched_by, getattr(self.link, "id", None), getattr(self.web_session, "id", None),
-                self.values.get("ad_id"), self.values.get("ctwa_clid"))
+                self.values.get("ad_id") or self.values.get("post_id"), self.values.get("ctwa_clid"))
 
 
 async def detect(session: AsyncSession, org: int, value: str | None, referral: dict | None,
                  provider: str = "whatsapp_cloud") -> Signal | None:
     if referral:
-        ad_id = referral.get("source_id")
+        vals = referral_values(referral)
+        ad_id = vals.get("ad_id")
         link = await link_by_ad(session, org, ad_id) or await link_by_text(session, org, value)
         # Anuncios que abren Messenger o Instagram Direct: el canal es la red; el anuncio queda en ad_id
         sig = Signal(provider if provider in ("messenger", "instagram") else "meta_ctwa", "ctwa_referral", link=link,
-                     values={"ctwa_clid": referral.get("ctwa_clid"), "ad_id": ad_id,
-                             "landing_url": referral.get("source_url")})
+                     values=vals)
         if link:
             sig.values.update({f: getattr(link, f) for f in UTM_FIELDS if getattr(link, f)})
         return sig
@@ -195,8 +265,8 @@ async def _first_without_signal(session: AsyncSession, conv: Conversation,
 async def _enrichment_status(session: AsyncSession, org: int, values: dict) -> str:
     """pending si hay un anuncio de Meta o un gclid y la cuenta publicitaria está conectada."""
     wanted = []
-    if values.get("ad_id"):
-        wanted.append("meta")
+    if values.get("ad_id") or (values.get("post_id") and not str(values["post_id"]).startswith("ig:")):
+        wanted.append("meta")  # anuncio, o publicación cuyo anuncio promotor se busca
     if values.get("gclid"):
         wanted.append("google_ads")
     if not wanted:
@@ -227,7 +297,9 @@ def _touch(conv: Conversation, msg: Message | None, sig: Signal, first: bool) ->
                             matched_by=sig.matched_by, link_id=getattr(sig.link, "id", None),
                             web_session_id=getattr(sig.web_session, "id", None), utm_source=v.get("utm_source"),
                             utm_medium=v.get("utm_medium"), utm_campaign=v.get("utm_campaign"), gclid=v.get("gclid"),
-                            ctwa_clid=v.get("ctwa_clid"), ad_id=v.get("ad_id"), is_first=first)
+                            ctwa_clid=v.get("ctwa_clid"), ad_id=v.get("ad_id"), is_first=first,
+                            source_type=v.get("source_type"), post_id=v.get("post_id"),
+                            ad_headline=v.get("ad_headline"))
 
 
 async def attribute(session: AsyncSession, conv: Conversation, value: str | None, referral: dict | None) -> Attribution:
@@ -265,14 +337,17 @@ async def on_inbound(session: AsyncSession, conv: Conversation, msg: Message, ra
         last = (await session.scalars(
             select(AttributionTouch).where(AttributionTouch.conversation_id == conv.id)
             .order_by(AttributionTouch.occurred_at.desc()).limit(1))).first()
-        if last is not None and (last.matched_by, last.link_id, last.web_session_id, last.ad_id,
+        if last is not None and (last.matched_by, last.link_id, last.web_session_id, last.ad_id or last.post_id,
                                  last.ctwa_clid) == sig.key():
             sig = None  # el cliente repite el mismo origen: no es un toque nuevo
         else:
-            _apply(attr, sig)
-            attr.enrichment_status = await _enrichment_status(session, org, sig.values)
+            # El conteo de toques cambia en el MISMO UPDATE que el nuevo origen: así el trigger de la base sabe que
+            # es un regreso (mueve solo la última fuente) y no un enriquecimiento del primer toque.
             attr.touches = (attr.touches or 1) + 1
             attr.last_touch_at = now
+            _apply(attr, sig)
+            status = await _enrichment_status(session, org, sig.values)
+            attr.enrichment_status = status
             session.add(_touch(conv, msg, sig, first=False))
     if sig and sig.web_session is not None and sig.web_session.matched_conversation_id is None:
         sig.web_session.matched_conversation_id, sig.web_session.matched_at = conv.id, now

@@ -3,7 +3,7 @@
 import re
 from datetime import timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -57,18 +57,28 @@ async def list_templates(session: AsyncSession, channel: Channel, refresh: bool 
         from app.service import wa_client  # import diferido (service importa este módulo indirectamente)
 
         raw = await (await wa_client(session, channel)).list_templates(waba)
-        await session.execute(delete(WaTemplate).where(WaTemplate.organization_id == org, WaTemplate.waba_id == waba))
+        # Upsert: se conservan los datos propios (origen, paquete del asistente, motivo de rechazo)
+        existing = {(r.name, r.language): r for r in rows}
         now = utcnow()
         rows = []
         for t in raw:
-            r = WaTemplate(organization_id=org, waba_id=waba, name=t["name"], language=t["language"],
-                           category=t.get("category"), status=t.get("status"), quality=(t.get("quality_score") or {})
-                           .get("score") if isinstance(t.get("quality_score"), dict) else None,
-                           parameter_format=t.get("parameter_format"), components=t.get("components", []),
-                           synced_at=now)
-            session.add(r)
+            r = existing.pop((t["name"], t["language"]), None)
+            if r is None:
+                r = WaTemplate(organization_id=org, waba_id=waba, name=t["name"], language=t["language"],
+                               components=t.get("components", []))
+                session.add(r)
+            r.category, r.status = t.get("category"), t.get("status")
+            r.quality = (t.get("quality_score") or {}).get("score") if isinstance(t.get("quality_score"), dict) else None
+            r.parameter_format, r.components, r.synced_at = t.get("parameter_format"), t.get("components", []), now
+            if t.get("id"):
+                r.meta_template_id = str(t["id"])
+            if t.get("rejected_reason") and t.get("rejected_reason") != "NONE":
+                r.rejected_reason = t["rejected_reason"]
             rows.append(r)
+        for gone in existing.values():  # borradas en Meta
+            await session.delete(gone)
         await session.commit()
+        rows.sort(key=lambda r: r.name)
     return [describe(_row_to_raw(r)) for r in rows]
 
 

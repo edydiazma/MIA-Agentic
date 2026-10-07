@@ -14,7 +14,7 @@ import openai
 
 from app.ai import anthropic_provider as ap
 from app.ai import openai_provider as op
-from app.ai.base import Usage
+from app.ai.base import Part, Turn, Usage
 
 log = logging.getLogger(__name__)
 PROVIDERS = ("anthropic", "openai", "openai_compatible", "azure_openai")
@@ -45,8 +45,9 @@ def missing_required(data: dict, schema: dict) -> list[str]:
     return [k for k in schema.get("required", []) if k not in data]
 
 
-async def complete_json(conn: ResolvedConnection, system: str, user: str, schema: dict,
+async def complete_json(conn: ResolvedConnection, system: str, user: "str | list[Part]", schema: dict,
                         max_tokens: int = 4000) -> tuple[dict, Usage]:
+    """`user` es texto o una lista de partes (texto, imágenes, PDF) para leer documentos con visión."""
     if conn.provider not in PROVIDERS:
         raise LLMError(f"Proveedor desconocido: {conn.provider}")
     usage = Usage()
@@ -71,7 +72,8 @@ async def _anthropic(conn: ResolvedConnection, system, user, schema, max_tokens,
     resp = await ap.client(conn.api_key, conn.base_url).beta.messages.create(
         model=conn.model, max_tokens=max_tokens, output_config=output_config,
         system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user}], **kw,
+        messages=[{"role": "user", "content": user if isinstance(user, str) else ap._content(Turn("user", user))}],
+        **kw,
     )
     ap.add_usage(usage, resp)
     if resp.stop_reason == "refusal":
@@ -89,7 +91,8 @@ async def _openai(conn: ResolvedConnection, system, user, schema, max_tokens, us
     if conn.provider in ("openai_compatible", "azure_openai") and not conn.base_url:
         raise LLMError("Falta la URL base del endpoint")
     client = op.client(conn.provider, conn.api_key, conn.base_url, conn.params)
-    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    content = user if isinstance(user, str) else op._message(Turn("user", user))["content"]
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": content}]
     try:
         resp = await client.chat.completions.create(
             model=conn.model, messages=messages, max_completion_tokens=max_tokens,

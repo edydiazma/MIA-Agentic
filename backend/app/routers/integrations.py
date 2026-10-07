@@ -36,9 +36,9 @@ router = APIRouter(prefix="/api/integrations", tags=["integrations"])
 log = logging.getLogger(__name__)
 CRM = [Depends(feature_required("crm"))]
 LOCAL_FIELDS = {"contact": ["name", "first_name", "last_name", "email", "phone", "stage", "notes", "memory",
-                            *af.FIELDS],
+                            *af.FIELDS, *af.CUSTOMER_FIELDS],
                 "deal": ["deal.name", "deal.amount", "deal.stage", "deal.status", "deal.currency", "deal.close_date",
-                         *af.FIELDS]}
+                         *af.FIELDS, *af.CUSTOMER_FIELDS]}
 _tasks: set[asyncio.Task] = set()
 
 
@@ -200,7 +200,8 @@ async def get_mappings(provider: str, agent: Agent = Depends(current_agent),
                          for m in rows],
             "local_fields": {"contact": LOCAL_FIELDS["contact"] + customs, "deal": LOCAL_FIELDS["deal"]},
             # Grupos para el panel de mapeo (los campos de atribución solo se envían, nunca se leen del CRM)
-            "field_groups": {"attribution": {"label": "Atribución", "push_only": True, "fields": af.FIELDS}},
+            "field_groups": {"attribution": {"label": "Atribución", "push_only": True, "fields": af.FIELDS},
+                             "customer": {"label": "Cliente 360", "push_only": True, "fields": af.CUSTOMER_FIELDS}},
             "defaults": cx.default_mappings(provider, (conn.settings or {}).get("contact_object", "Contact"))}
 
 

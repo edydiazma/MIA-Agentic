@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.agent_config import RecoveryAttempt, SourceRule
 from app.settings_store import DEFAULTS
 
 AUTOMATION_TYPES = ("welcome", "keyword_reply", "keyword_handoff", "business_hours", "inactivity_close")
@@ -25,6 +26,21 @@ class AIAgentDoc(BaseModel):
     use_customer_memory: bool = True
     use_catalog: bool = True
     use_appointments: bool = True
+    # Configuración avanzada (§17): reglas por fuente, recuperación por inactividad, seguridad
+    timezone: str | None = None
+    max_words: int | None = Field(default=None, ge=20, le=2000)
+    ad_context_enabled: bool = True
+    ad_context_prompt: str | None = None
+    source_rules: list[SourceRule] = []
+    cost_optimization: bool = True
+    security_enabled: bool = True
+    security_prompt: str | None = None
+    security_action: Literal["close", "block", "handoff", "flag"] = "close"
+    recovery_enabled: bool = False
+    recovery_attempts: list[RecoveryAttempt] = Field(default=[], max_length=3)
+    inactivity_end_hours: float | None = Field(default=None, gt=0, le=72)
+    inactivity_end_typification_id: int | None = None
+    extract_field_ids: list[int] = []
 
 
 class CortexMemberDoc(BaseModel):
@@ -43,7 +59,7 @@ class CortexValidationDoc(BaseModel):
 class CortexDoc(BaseModel):
     name: str = Field(min_length=1)
     description: str | None = None
-    purpose: Literal["chat", "classification", "learning", "flow", "json_edit", "qa", "agent_test", "any"] = "any"
+    purpose: Literal["chat", "classification", "learning", "flow", "json_edit", "qa", "agent_test", "onboarding", "golden", "any"] = "any"
     strategy: Literal["failover", "lowest_latency", "weighted"] = "failover"
     max_latency_ms: int | None = Field(default=None, ge=100)
     max_attempts: int = Field(default=3, ge=1, le=10)

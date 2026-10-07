@@ -27,6 +27,7 @@ from app.models import (
     ConversationSuggestion,
     Group,
     Message,
+    Product,
     Typification,
     utcnow,
 )
@@ -54,6 +55,8 @@ class Catalog:
     typifications: list[Typification]
     groups: list[Group]
     fields: dict[str, ContactField]
+    products: list = None  # candidatos del catálogo encontrados en el texto del cliente (Cliente 360)
+    golden: dict = None  # tipos de llave del registro maestro a extraer (misma llamada, §15)
 
     @property
     def typification_names(self) -> list[str]:
@@ -88,7 +91,39 @@ async def load_catalog(session: AsyncSession, org: int, cfg: dict) -> Catalog:
                                    ContactField.archived_at.is_(None))
         .order_by(ContactField.position, ContactField.id))).all()}
     tags = [t for t in cfg.get("tags", []) if t.get("name")]
-    return Catalog(tags, typs, groups, fields)
+    golden = None
+    if (await get_setting(session, "golden", org))["extract_conversations"]:
+        from app.golden.keys import key_types
+
+        golden = {k: t for k, t in (await key_types(session, org)).items() if t.ai_extract} or None
+    return Catalog(tags, typs, groups, fields, golden=golden)
+
+
+PRODUCT_STAGES = ("mentioned", "interested", "quoted", "purchased", "not_interested")
+MAX_PRODUCT_CANDIDATES = 8
+
+
+async def product_candidates(session: AsyncSession, org: int, msgs: list[Message]) -> list:
+    """Productos del catálogo que aparecen en los últimos mensajes del cliente (búsqueda por mensaje)."""
+    from app import catalog
+
+    if not await session.scalar(select(func.count()).select_from(Product).where(Product.organization_id == org)):
+        return []
+    texts = [m.text or m.transcript for m in msgs if m.direction == "in" and (m.text or m.transcript)][-10:]
+    joined = " ".join(texts).lower()[:4000]
+    # 1) nombres o SKU que aparecen tal cual en lo que escribió el cliente
+    found: dict[int, object] = {p.id: p for p in (await session.scalars(
+        select(Product).where(Product.organization_id == org,
+                              (func.strpos(joined, func.lower(Product.name)) > 0)
+                              | (func.strpos(joined, func.lower(Product.sku)) > 0))
+        .order_by(func.length(Product.name).desc()).limit(MAX_PRODUCT_CANDIDATES))).all()}
+    # 2) búsqueda aproximada por mensaje (modelos parciales, errores de tipeo)
+    for m in reversed([m for m in msgs if m.direction == "in" and (m.text or m.transcript)][-10:]):
+        for p in await catalog.search(session, org, (m.text or m.transcript)[:200], limit=3):
+            found.setdefault(p.id, p)
+        if len(found) >= MAX_PRODUCT_CANDIDATES:
+            break
+    return list(found.values())[:MAX_PRODUCT_CANDIDATES]
 
 
 # --- Prompt y esquema -----------------------------------------------------------
@@ -118,6 +153,19 @@ def build_schema(cat: Catalog, modes: dict) -> dict:
                            "confidence": {"type": "number"},
                            "evidence": {"type": "string", "description": "Frase del cliente que lo respalda"}},
             "required": ["key", "value", "confidence", "evidence"], "additionalProperties": False}}
+    # Productos de la conversación (Cliente 360): misma llamada, sin costo adicional de IA
+    props["products"] = {"type": "array", "items": {
+        "type": "object",
+        "properties": {"name": {"type": "string"},
+                       "catalog_sku_or_null": {"type": "string",
+                                               "description": "SKU del catálogo si coincide; \"\" si no está"},
+                       "stage": {"type": "string", "enum": list(PRODUCT_STAGES)},
+                       "confidence": {"type": "number"}},
+        "required": ["name", "catalog_sku_or_null", "stage", "confidence"], "additionalProperties": False}}
+    if cat.golden:  # registro maestro: llaves, vehículos y consentimientos en la misma llamada
+        from app.golden.extract import conversation_schema
+
+        props.update(conversation_schema(cat.golden))
     if modes.get("memory", "auto") != "off":
         props["customer_memory"] = {
             "type": "string",
@@ -146,6 +194,18 @@ def build_system(cfg: dict, cat: Catalog) -> str:
                   "próximos pasos. Conserva lo que siga vigente (incluido lo que escribieron los asesores), corrige "
                   "lo que cambió, máximo 12 viñetas cortas que empiecen con «- ». No incluyas datos sensibles "
                   "(documentos, tarjetas, contraseñas). Si no hay nada nuevo, devuelve la memoria actual igual."]
+    parts += ["", "## Productos",
+              "Lista los productos o servicios concretos que el cliente mencionó, por los que preguntó, que se le "
+              "cotizaron o que compró en esta conversación (etapas: mentioned, interested, quoted, purchased, "
+              "not_interested). Si coincide con un producto del catálogo de abajo usa su SKU; si no, deja "
+              "catalog_sku_or_null vacío y escribe el nombre como lo dijo el cliente. No inventes productos."]
+    if cat.products:
+        parts += ["Catálogo (candidatos encontrados en la conversación):"]
+        parts += [f"- {p.sku}: {p.name}" for p in cat.products]
+    if cat.golden:
+        from app.golden.extract import conversation_instructions
+
+        parts += ["", conversation_instructions(cat.golden)]
     if cat.fields:
         parts += ["", "## Datos del cliente a extraer (solo si el cliente los dijo; formato según el tipo)"]
         for f in cat.fields.values():
@@ -211,7 +271,16 @@ def sanitize(raw: dict, cat: Catalog) -> dict:
         "group_confidence": _conf(raw.get("group_confidence")),
         "fields": [],
         "customer_memory": str(raw.get("customer_memory") or "").strip()[:3000] or None,
+        "products": [{"name": str(p.get("name") or "").strip()[:200],
+                      "catalog_sku_or_null": str(p.get("catalog_sku_or_null") or "").strip() or None,
+                      "stage": p.get("stage") if p.get("stage") in PRODUCT_STAGES else "interested",
+                      "confidence": _conf(p.get("confidence"))}
+                     for p in raw.get("products") or [] if isinstance(p, dict) and str(p.get("name") or "").strip()],
     }
+    if cat.golden:
+        from app.golden.extract import sanitize_conversation
+
+        out["golden"] = sanitize_conversation(raw, cat.golden)
     for f in raw.get("fields") or []:
         if isinstance(f, dict) and f.get("key") in cat.fields:
             out["fields"].append({"key": f["key"], "value": f.get("value"), "confidence": _conf(f.get("confidence")),
@@ -231,7 +300,7 @@ async def suggest(session: AsyncSession, conv: Conversation, kind: str, target: 
 
 
 async def apply_result(session: AsyncSession, conv: Conversation, cfg: dict, cat: Catalog, res: dict,
-                       trigger: str) -> dict:
+                       trigger: str, ai_call_id: int | None = None) -> dict:
     from app import service  # import diferido: service importa este módulo
 
     await set_actor(session, "ai")
@@ -307,6 +376,20 @@ async def apply_result(session: AsyncSession, conv: Conversation, cfg: dict, cat
         set_native(session, contact, "memory", memory, "ai", conversation_id=conv.id)
         applied["memory"] = True
 
+    # Productos por interacción (confianza ≥ 0.6)
+    if trigger != "test" and res.get("products"):
+        from app.interaction_products import record_ai_products
+
+        applied["products"] = await record_ai_products(session, conv, res["products"])
+
+    # Registro maestro: llaves de identificación, vehículos y consentimientos
+    if trigger != "test" and res.get("golden"):
+        from app.golden.extract import apply_conversation
+
+        ext = await apply_conversation(session, conv, res["golden"], ai_call_id)
+        if ext:
+            applied["golden"] = {"keys_added": ext.keys_added, "keys_updated": ext.keys_updated}
+
     if notes:
         await service.system_note(session, conv,
                                   "IA: " + "; ".join(notes) + (f". {res['reason']}" if res["reason"] else ""))
@@ -333,6 +416,7 @@ async def classify(session: AsyncSession, conv: Conversation, trigger: str, appl
     msgs = list(reversed(rows))
     if not any(m.direction == "in" for m in msgs):
         return {"skipped": "La conversación no tiene mensajes del cliente", "applied": None}
+    cat.products = await product_candidates(session, org, msgs)
 
     agent_names = dict((await session.execute(
         select(Agent.id, Agent.name).where(Agent.organization_id == org))).all())
@@ -348,7 +432,8 @@ async def classify(session: AsyncSession, conv: Conversation, trigger: str, appl
     if apply:
         from app import service
 
-        out["applied"] = await apply_result(session, conv, cfg, cat, result, trigger)
+        out["applied"] = await apply_result(session, conv, cfg, cat, result, trigger,
+                                            ctx.call_ids[-1] if ctx.call_ids else None)
         conv.ai_inbound_mark = conv.inbound_count
         await service.commit_and_broadcast(session, conv)
     return out

@@ -28,6 +28,11 @@ export default function LoginPage() {
         return;
       }
       setSession(r.access_token, r.agent);
+      try {
+        // Nueva sesión: vuelve a revisar si falta el asistente de configuración
+        sessionStorage.removeItem("onboarding_checked");
+        sessionStorage.removeItem("onboarding_skip_redirect");
+      } catch {}
       router.replace("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error al iniciar sesión");

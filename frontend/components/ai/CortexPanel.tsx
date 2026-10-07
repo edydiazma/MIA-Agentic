@@ -30,6 +30,7 @@ const PURPOSE_LABEL: Record<CortexPurpose, string> = {
   json_edit: "Edición JSON",
   qa: "Calidad (QA)",
   agent_test: "Pruebas de agentes",
+  onboarding: "Onboarding",
 };
 
 const EMPTY: CortexIn = {

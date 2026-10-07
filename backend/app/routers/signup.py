@@ -3,7 +3,6 @@
 import time
 from collections import defaultdict, deque
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -13,10 +12,10 @@ from app.auth import create_token, hash_password, require_admin
 from app.config import get_settings
 from app.db import get_session
 from app.fields import EMAIL_RE
-from app.models import Agent, AIAgent, Channel, Organization, Plan
+from app.models import Agent, Channel, Organization, Plan
+from app.onboarding import graph, meta
 from app.plans import enforce_limit
 from app.schemas import AgentOut
-from app.secrets_vault import put_secret
 from app.tenancy import create_org, plan_by_key, provision_ai_defaults
 
 router = APIRouter(prefix="/api", tags=["signup"])
@@ -104,18 +103,6 @@ async def embedded_config(_: Agent = Depends(require_admin)):
             "enabled": bool(settings.meta_app_id and settings.meta_app_secret and settings.meta_embedded_signup_config_id)}
 
 
-async def _graph(method: str, path: str, token: str | None = None, **kw) -> dict:
-    url = f"https://graph.facebook.com/{settings.wa_api_version}/{path.lstrip('/')}"
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    async with httpx.AsyncClient(timeout=30) as http:
-        r = await http.request(method, url, headers=headers, **kw)
-    data = r.json() if r.content else {}
-    if r.status_code >= 400:
-        msg = (data.get("error") or {}).get("message") or f"HTTP {r.status_code}"
-        raise HTTPException(502, f"Meta: {msg}")
-    return data
-
-
 @router.post("/channels/embedded-signup")
 async def embedded_signup(body: EmbeddedSignupIn, admin: Agent = Depends(require_admin),
                           session: AsyncSession = Depends(get_session)):
@@ -128,28 +115,12 @@ async def embedded_signup(body: EmbeddedSignupIn, admin: Agent = Depends(require
     if not existing:
         await enforce_limit(session, admin.organization_id, "channels")
 
-    token_data = await _graph("GET", "oauth/access_token", params={
-        "client_id": settings.meta_app_id, "client_secret": settings.meta_app_secret, "code": body.code})
-    token = token_data.get("access_token")
-    if not token:
-        raise HTTPException(502, "Meta no devolvió un token")
-    await _graph("POST", f"{body.waba_id}/subscribed_apps", token)
-    if body.pin:
-        await _graph("POST", f"{body.phone_number_id}/register", token,
-                     json={"messaging_product": "whatsapp", "pin": body.pin})
-    info = await _graph("GET", body.phone_number_id, token, params={"fields": "display_phone_number,verified_name"})
-
-    channel = existing or Channel(organization_id=admin.organization_id, phone_number_id=body.phone_number_id,
-                                  name=body.name or info.get("verified_name") or "WhatsApp")
-    if not existing:
-        channel.default_ai_agent_id = await session.scalar(select(AIAgent.id).where(
-            AIAgent.organization_id == admin.organization_id).order_by(AIAgent.id).limit(1))
-        session.add(channel)
-        await session.flush()
-    channel.waba_id = body.waba_id
-    channel.display_phone = info.get("display_phone_number")
-    channel.access_token_secret_id = await put_secret(session, token, f"channel:{channel.id}",
-                                                      channel.access_token_secret_id)
+    try:
+        channel, _pin, _detail = await meta.connect_whatsapp(
+            session, admin.organization_id, code=body.code, waba_id=body.waba_id,
+            phone_number_id=body.phone_number_id, pin=body.pin, name=body.name)
+    except graph.GraphError as e:
+        raise HTTPException(502, f"Meta: {e}") from e
     await session.commit()
     org = await session.get(Organization, admin.organization_id)
     return {"id": channel.id, "name": channel.name, "phone_number_id": channel.phone_number_id,

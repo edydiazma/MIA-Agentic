@@ -67,6 +67,8 @@ class Organization(Base):
     trial_ends_at: Mapped[datetime | None] = ts(nullable=True)
     country: Mapped[str | None] = mapped_column(String(2), nullable=True)
     billing_email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    industry: Mapped[str | None] = mapped_column(Text, nullable=True)
+    onboarding_completed_at: Mapped[datetime | None] = ts(nullable=True)  # null = mostrar el asistente
     created_at: Mapped[datetime] = ts(default=utcnow)
     updated_at: Mapped[datetime] = ts(default=utcnow)
 
@@ -161,6 +163,21 @@ class Channel(Base):
     settings: Mapped[dict] = mapped_column(JSONB, default=dict)
     status: Mapped[str] = mapped_column(Text, default="active")  # active | disconnected | error
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Estado de Meta del número (migración 21)
+    verified_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    name_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    code_verification_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    quality_rating: Mapped[str | None] = mapped_column(Text, nullable=True)
+    messaging_limit_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
+    throughput_level: Mapped[str | None] = mapped_column(Text, nullable=True)
+    platform_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_coexistence: Mapped[bool] = mapped_column(Boolean, default=False)
+    pin_set_at: Mapped[datetime | None] = ts(nullable=True)
+    registered_at: Mapped[datetime | None] = ts(nullable=True)
+    webhook_subscribed_at: Mapped[datetime | None] = ts(nullable=True)
+    last_inbound_at: Mapped[datetime | None] = ts(nullable=True)
+    business_profile: Mapped[dict] = mapped_column(JSONB, default=dict)
+    meta_synced_at: Mapped[datetime | None] = ts(nullable=True)
     created_at: Mapped[datetime] = ts(default=utcnow)
     updated_at: Mapped[datetime] = ts(default=utcnow)
 
@@ -174,6 +191,46 @@ class Contact(Base):
     organization_id: Mapped[int] = org_fk()
     wa_id: Mapped[str | None] = mapped_column(Text, nullable=True)  # null: contacto sin WhatsApp (IG, Messenger, web)
     avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Identidad de WhatsApp sin teléfono (migración 22): BSUID por portafolio y @usuario
+    wa_bsuid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    wa_parent_bsuid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    wa_username: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Métricas de interacción (las mantienen triggers; solo lectura para la app). Las FK existen en la base;
+    # en el ORM no se declaran para no volver ambiguos los joins contacts↔conversations/agents/channels.
+    first_interaction_at: Mapped[datetime | None] = ts(nullable=True)
+    first_inbound_at: Mapped[datetime | None] = ts(nullable=True)
+    last_interaction_at: Mapped[datetime | None] = ts(nullable=True)
+    last_inbound_at: Mapped[datetime | None] = ts(nullable=True)
+    last_outbound_at: Mapped[datetime | None] = ts(nullable=True)
+    messages_in: Mapped[int] = mapped_column(Integer, default=0)
+    messages_out: Mapped[int] = mapped_column(Integer, default=0)
+    conversations_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK en la base
+    last_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK en la base
+    last_conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK en la base
+    last_agent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK en la base
+    last_typification_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK en la base
+    last_typified_at: Mapped[datetime | None] = ts(nullable=True)
+    flow_runs_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_flow_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK en la base
+    last_flow_at: Mapped[datetime | None] = ts(nullable=True)
+    channel_providers: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    channel_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)  # números de la empresa usados
+    products_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_product_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Fuente del cliente: primer y último toque (migración 24; las mantiene un trigger sobre attributions)
+    first_source_channel: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_source_ad_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_source_campaign: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_source_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_source_at: Mapped[datetime | None] = ts(nullable=True)
+    first_attribution_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_source_channel: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_source_ad_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_source_campaign: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_source_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_source_at: Mapped[datetime | None] = ts(nullable=True)
+    last_attribution_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     email: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -207,6 +264,14 @@ class ContactField(Base):
     agent_editable: Mapped[bool] = mapped_column(Boolean, default=True)
     position: Mapped[int] = mapped_column(Integer, default=100)
     archived_at: Mapped[datetime | None] = ts(nullable=True)
+    # Organización (migración 23)
+    section: Mapped[str] = mapped_column(Text, default="General")
+    scope: Mapped[str] = mapped_column(Text, default="contact")  # contact | deal | vehicle | appointment | flow
+    pipeline: Mapped[str | None] = mapped_column(Text, nullable=True)
+    maps_to: Mapped[str | None] = mapped_column(Text, nullable=True)  # llave maestra o atributo (vehicle.x, deal.x)
+    aliases: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    show_in_card: Mapped[bool] = mapped_column(Boolean, default=False)
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     created_at: Mapped[datetime] = ts(default=utcnow)
     updated_at: Mapped[datetime] = ts(default=utcnow)
 
@@ -294,6 +359,11 @@ class Typification(Base):
     is_success: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     position: Mapped[int] = mapped_column(Integer, default=100)
+    section: Mapped[str | None] = mapped_column(Text, nullable=True)  # positive | negative | followup | neutral
+    keyword: Mapped[str | None] = mapped_column(Text, nullable=True)
+    group_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
+    reactivate_bot_after_h: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    required_fields: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     created_at: Mapped[datetime] = ts(default=utcnow)
 
 
@@ -329,6 +399,9 @@ class Conversation(Base):
     ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_sentiment: Mapped[str | None] = mapped_column(Text, nullable=True)
     qa_score: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)  # última revisión de calidad
+    recovery_attempts_sent: Mapped[int] = mapped_column(SmallInteger, default=0)
+    last_recovery_at: Mapped[datetime | None] = ts(nullable=True)
+    security_flag: Mapped[str | None] = mapped_column(Text, nullable=True)  # spam | abuse | phishing
     ai_typification_id: Mapped[int | None] = fk("typifications.id")
     ai_classified_at: Mapped[datetime | None] = ts(nullable=True)
     ai_inbound_mark: Mapped[int] = mapped_column(Integer, default=0)
@@ -558,6 +631,21 @@ class AIAgent(Base):
     use_customer_memory: Mapped[bool] = mapped_column(Boolean, default=True)
     use_catalog: Mapped[bool] = mapped_column(Boolean, default=True)
     use_appointments: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Configuración avanzada (migración 25, §17)
+    timezone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    max_words: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ad_context_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    ad_context_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_rules: Mapped[list] = mapped_column(JSONB, default=list)
+    cost_optimization: Mapped[bool] = mapped_column(Boolean, default=True)
+    security_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    security_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    security_action: Mapped[str] = mapped_column(Text, default="close")  # close | block | handoff | flag
+    recovery_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    recovery_attempts: Mapped[list] = mapped_column(JSONB, default=list)  # [{after_hours, message, use_ai}] ≤ 3
+    inactivity_end_hours: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    inactivity_end_typification_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK en la base
+    extract_field_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
     created_at: Mapped[datetime] = ts(default=utcnow)
     updated_at: Mapped[datetime] = ts(default=utcnow)
 
@@ -690,6 +778,13 @@ class WaTemplate(Base):
     parameter_format: Mapped[str | None] = mapped_column(Text, nullable=True)
     components: Mapped[list] = mapped_column(JSONB)
     synced_at: Mapped[datetime] = ts(default=utcnow)
+    source: Mapped[str] = mapped_column(Text, default="meta_sync")  # meta_sync | panel | onboarding | ai
+    pack_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    template_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta_template_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rejected_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    submitted_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    submitted_at: Mapped[datetime | None] = ts(nullable=True)
 
 
 class Campaign(Base):
@@ -1068,6 +1163,16 @@ class Attribution(Base):
     touches: Mapped[int] = mapped_column(Integer, default=1)
     first_touch_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     last_touch_at: Mapped[datetime | None] = ts(nullable=True)
+    # Creativo / publicación del toque (migración 24)
+    source_type: Mapped[str | None] = mapped_column(Text, nullable=True)  # ad | post
+    page_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    post_id: Mapped[str | None] = mapped_column(Text, nullable=True)  # "{page_id}_{post_id}"
+    ad_headline: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_media_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_thumbnail_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = ts(default=utcnow)
 
 
@@ -1123,6 +1228,12 @@ class AttributionTouch(Base):
     ctwa_clid: Mapped[str | None] = mapped_column(Text, nullable=True)
     ad_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_first: Mapped[bool] = mapped_column(Boolean, default=False)
+    source_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    campaign_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    campaign_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_headline: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AdEntity(Base):
@@ -1143,6 +1254,15 @@ class AdEntity(Base):
     ad_group_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     keyword: Mapped[str | None] = mapped_column(Text, nullable=True)
     data: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    effective_object_story_id: Mapped[str | None] = mapped_column(Text, nullable=True)  # publicación del anuncio
+    headline: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thumbnail_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    destination: Mapped[str | None] = mapped_column(Text, nullable=True)
+    account_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     fetched_at: Mapped[datetime] = ts(default=utcnow)
 
 
@@ -1221,6 +1341,11 @@ class Deal(Base):
     expected_close: Mapped[date | None] = mapped_column(Date, nullable=True)
     closed_at: Mapped[datetime | None] = ts(nullable=True)
     lost_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    vehicle_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK contact_vehicles (migración 23)
+    origin: Mapped[str | None] = mapped_column(Text, nullable=True)  # oportunidad generada: soat_due, trade_in…
+    attributes: Mapped[dict] = mapped_column(JSONB, default=dict)  # calificación por línea (modelo, pago, plazo…)
+    interest_level: Mapped[str | None] = mapped_column(Text, nullable=True)  # hot | warm | cold
+    stage_changed_at: Mapped[datetime | None] = ts(nullable=True)
     created_at: Mapped[datetime] = ts(default=utcnow)
     updated_at: Mapped[datetime] = ts(default=utcnow)
 
@@ -1492,6 +1617,9 @@ class ContactIdentity(Base):
     provider: Mapped[str] = mapped_column(Text)  # whatsapp_cloud | messenger | instagram | webchat
     channel_id: Mapped[int | None] = fk("channels.id", ondelete="CASCADE")
     external_id: Mapped[str] = mapped_column(Text)
+    phone: Mapped[str | None] = mapped_column(Text, nullable=True)  # WhatsApp: teléfono cuando Meta lo envía
+    bsuid: Mapped[str | None] = mapped_column(Text, nullable=True)  # WhatsApp: user_id (BSUID)
+    parent_bsuid: Mapped[str | None] = mapped_column(Text, nullable=True)
     username: Mapped[str | None] = mapped_column(Text, nullable=True)
     profile: Mapped[dict] = mapped_column(JSONB, default=dict)
     last_inbound_at: Mapped[datetime | None] = ts(nullable=True)
@@ -1702,3 +1830,365 @@ class PushSubscription(Base):
     failures: Mapped[int] = mapped_column(Integer, default=0)
     last_success_at: Mapped[datetime | None] = ts(nullable=True)
     created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+# =============================================================================
+# Onboarding y configuración automática (migración 21). docs/data-model.md §13
+# =============================================================================
+class OnboardingRun(Base):
+    __tablename__ = "onboarding_runs"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    status: Mapped[str] = mapped_column(Text, default="in_progress")  # in_progress | completed | abandoned
+    current_step: Mapped[str] = mapped_column(Text, default="company")
+    industry: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answers: Mapped[dict] = mapped_column(JSONB, default=dict)
+    channel_id: Mapped[int | None] = fk("channels.id", ondelete="SET NULL")
+    started_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    started_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+    completed_at: Mapped[datetime | None] = ts(nullable=True)
+
+
+class OnboardingStep(Base):
+    __tablename__ = "onboarding_steps"
+    __table_args__ = (UniqueConstraint("run_id", "key"),)
+
+    id: Mapped[int] = pk()
+    run_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("onboarding_runs.id", ondelete="CASCADE"))
+    key: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, default="pending")  # pending|running|done|warning|failed|skipped
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[dict] = mapped_column(JSONB, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = ts(nullable=True)
+    finished_at: Mapped[datetime | None] = ts(nullable=True)
+
+
+class ChannelHealthCheck(Base):
+    __tablename__ = "channel_health_checks"
+
+    channel_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("channels.id", ondelete="CASCADE"),
+                                            primary_key=True)
+    check_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    organization_id: Mapped[int] = org_fk()
+    status: Mapped[str] = mapped_column(Text)  # pass | warn | fail | pending | skipped
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data: Mapped[dict] = mapped_column(JSONB, default=dict)
+    fixable: Mapped[bool] = mapped_column(Boolean, default=False)
+    checked_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class AgentInvitation(Base):
+    __tablename__ = "agent_invitations"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    email: Mapped[str] = mapped_column(Text)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    role: Mapped[str] = mapped_column(Text, default="agent")
+    group_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
+    token_hash: Mapped[str] = mapped_column(Text, unique=True)
+    expires_at: Mapped[datetime] = ts()
+    accepted_at: Mapped[datetime | None] = ts(nullable=True)
+    accepted_agent_id: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    revoked_at: Mapped[datetime | None] = ts(nullable=True)
+    invited_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    email_sent_at: Mapped[datetime | None] = ts(nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class InteractionProduct(Base):
+    """Producto mencionado / cotizado / comprado en una conversación (catálogo o referencia externa). §14"""
+
+    __tablename__ = "interaction_products"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    contact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("contacts.id", ondelete="CASCADE"))
+    conversation_id: Mapped[int | None] = fk("conversations.id", ondelete="SET NULL")
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    product_id: Mapped[int | None] = fk("products.id", ondelete="SET NULL")
+    external_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    name: Mapped[str] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stage: Mapped[str] = mapped_column(Text, default="interested")  # mentioned|interested|quoted|purchased|not_interested
+    quantity: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    unit_price: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    source: Mapped[str] = mapped_column(Text)  # ai|agent|flow|api|whatsapp_order|catalog_message|import
+    confidence: Mapped[float | None] = mapped_column(REAL, nullable=True)
+    created_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+# =============================================================================
+# Registro maestro del cliente (migración 23). docs/data-model.md §15
+# =============================================================================
+class GoldenKeyType(Base):
+    __tablename__ = "golden_key_types"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int | None] = fk("organizations.id", ondelete="CASCADE")  # null = del sistema
+    key: Mapped[str] = mapped_column(Text)
+    label: Mapped[str] = mapped_column(Text)
+    normalizer: Mapped[str] = mapped_column(Text)  # phone|email|username|document|plate|vin|name|date|address|text
+    is_identifier: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
+    multi: Mapped[bool] = mapped_column(Boolean, default=True)
+    ai_extract: Mapped[bool] = mapped_column(Boolean, default=True)
+    ai_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    position: Mapped[int] = mapped_column(Integer, default=100)
+    archived_at: Mapped[datetime | None] = ts(nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class ContactKey(Base):
+    __tablename__ = "contact_keys"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    contact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("contacts.id", ondelete="CASCADE"))
+    key_type: Mapped[str] = mapped_column(Text)
+    subtype: Mapped[str | None] = mapped_column(Text, nullable=True)
+    value: Mapped[str] = mapped_column(Text)
+    value_normalized: Mapped[str] = mapped_column(Text)
+    data: Mapped[dict] = mapped_column(JSONB, default=dict)
+    rank: Mapped[str] = mapped_column(Text, default="secondary")  # primary | secondary
+    status: Mapped[str] = mapped_column(Text, default="active")  # active | superseded | rejected
+    verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    confidence: Mapped[float | None] = mapped_column(REAL, nullable=True)
+    source: Mapped[str] = mapped_column(Text)
+    conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK en la base
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    extraction_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    seen_count: Mapped[int] = mapped_column(Integer, default=1)
+    first_seen_at: Mapped[datetime] = ts(default=utcnow)
+    last_seen_at: Mapped[datetime] = ts(default=utcnow)
+    created_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class ContactVehicle(Base):
+    __tablename__ = "contact_vehicles"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    contact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("contacts.id", ondelete="CASCADE"))
+    plate: Mapped[str | None] = mapped_column(Text, nullable=True)
+    vin: Mapped[str | None] = mapped_column(Text, nullable=True)
+    make: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    year: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    color: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fuel: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mileage_km: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    attributes: Mapped[dict] = mapped_column(JSONB, default=dict)
+    relation: Mapped[str] = mapped_column(Text, default="owner")
+    status: Mapped[str] = mapped_column(Text, default="active")
+    insurance_due: Mapped[date | None] = mapped_column(Date, nullable=True)
+    inspection_due: Mapped[date | None] = mapped_column(Date, nullable=True)
+    warranty_until: Mapped[date | None] = mapped_column(Date, nullable=True)
+    next_service_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source: Mapped[str] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(REAL, nullable=True)
+    conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    extraction_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class KeyExtraction(Base):
+    __tablename__ = "key_extractions"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    contact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("contacts.id", ondelete="CASCADE"))
+    conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source_kind: Mapped[str] = mapped_column(Text)  # conversation | document | image | audio
+    document_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, default="pending")
+    extracted: Mapped[dict] = mapped_column(JSONB, default=dict)
+    keys_added: Mapped[int] = mapped_column(Integer, default=0)
+    keys_updated: Mapped[int] = mapped_column(Integer, default=0)
+    ai_call_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    finished_at: Mapped[datetime | None] = ts(nullable=True)
+
+
+class ContactMergeCandidate(Base):
+    __tablename__ = "contact_merge_candidates"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    contact_a_id: Mapped[int] = mapped_column(BigInteger)  # FK en la base (dos FK a contacts: sin relación ORM)
+    contact_b_id: Mapped[int] = mapped_column(BigInteger)
+    matched: Mapped[list] = mapped_column(JSONB)
+    score: Mapped[float] = mapped_column(REAL)
+    status: Mapped[str] = mapped_column(Text, default="pending")  # pending | merged | dismissed
+    decided_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    decided_at: Mapped[datetime | None] = ts(nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class ContactGolden(Base):
+    """Registro agregado (lo mantiene un trigger sobre contact_keys): solo lectura para la app."""
+
+    __tablename__ = "contact_golden"
+
+    contact_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # FK en la base
+    organization_id: Mapped[int] = mapped_column(BigInteger)
+    first_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    full_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    primary_phone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    phones: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    primary_email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    emails: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    usernames: Mapped[list] = mapped_column(JSONB, default=list)
+    document_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    document_number: Mapped[str | None] = mapped_column(Text, nullable=True)
+    birthdate: Mapped[date | None] = mapped_column(Date, nullable=True)
+    addresses: Mapped[list] = mapped_column(JSONB, default=list)
+    plates: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    vins: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    extra: Mapped[dict] = mapped_column(JSONB, default=dict)
+    completeness_pct: Mapped[int] = mapped_column(SmallInteger, default=0)
+    keys_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class ContactConsent(Base):
+    __tablename__ = "contact_consents"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    contact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("contacts.id", ondelete="CASCADE"))
+    consent_type: Mapped[str] = mapped_column(Text)  # habeas_data | terms | marketing | data_sharing | call_recording
+    granted: Mapped[bool] = mapped_column(Boolean)
+    policy_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK en la base
+    conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(Text)
+    recorded_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    recorded_at: Mapped[datetime] = ts(default=utcnow)
+    revoked_at: Mapped[datetime | None] = ts(nullable=True)
+
+
+class AdSpendDaily(Base):
+    """Inversión por anuncio / grupo / campaña y día (Meta Insights, Google Ads). §16"""
+
+    __tablename__ = "ad_spend_daily"
+
+    organization_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    platform: Mapped[str] = mapped_column(Text, primary_key=True)  # meta | google_ads
+    level: Mapped[str] = mapped_column(Text, primary_key=True)  # ad | ad_group | campaign
+    entity_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    account_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    campaign_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    campaign_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_group_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_group_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    impressions: Mapped[int] = mapped_column(BigInteger, default=0)
+    clicks: Mapped[int] = mapped_column(BigInteger, default=0)
+    spend: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    platform_conversations: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    fetched_at: Mapped[datetime] = ts(default=utcnow)
+
+
+# =============================================================================
+# Agente avanzado, etapas y webhooks entrantes (migración 25). docs/data-model.md §17
+# =============================================================================
+class PipelineStage(Base):
+    __tablename__ = "pipeline_stages"
+    __table_args__ = (UniqueConstraint("organization_id", "pipeline", "key"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    pipeline: Mapped[str] = mapped_column(Text)
+    key: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(Text)
+    external_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_condition: Mapped[str | None] = mapped_column(Text, nullable=True)
+    position: Mapped[int] = mapped_column(Integer, default=100)
+    probability: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    is_won: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_lost: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class DealStageEvent(Base):
+    __tablename__ = "deal_stage_events"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    deal_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("deals.id", ondelete="CASCADE"))
+    from_stage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    to_stage: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(Text)  # ai | agent | flow | crm | api | rule | webhook
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(REAL, nullable=True)
+    agent_id: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK en la base
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class InboundWebhook(Base):
+    __tablename__ = "inbound_webhooks"
+    __table_args__ = (UniqueConstraint("organization_id", "name"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    name: Mapped[str] = mapped_column(Text)
+    slug: Mapped[str] = mapped_column(Text, unique=True)
+    token_hash: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, default="active")  # draft | active | paused
+    action: Mapped[str] = mapped_column(Text)  # send_template|send_text|start_flow|upsert_contact|create_deal|create_appointment
+    channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK en la base
+    template_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    template_language: Mapped[str | None] = mapped_column(Text, nullable=True)
+    flow_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    params: Mapped[list] = mapped_column(JSONB, default=list)
+    options: Mapped[dict] = mapped_column(JSONB, default=dict)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    executions: Mapped[int] = mapped_column(BigInteger, default=0)
+    succeeded: Mapped[int] = mapped_column(BigInteger, default=0)
+    failed: Mapped[int] = mapped_column(BigInteger, default=0)
+    last_run_at: Mapped[datetime | None] = ts(nullable=True)
+    created_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    published_at: Mapped[datetime | None] = ts(nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class InboundWebhookRun(Base):
+    """Particionada: PK (id, created_at)."""
+
+    __tablename__ = "inbound_webhook_runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    organization_id: Mapped[int] = mapped_column(BigInteger)
+    webhook_id: Mapped[int] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(Text)  # succeeded | failed | rejected | duplicate
+    http_status: Mapped[int] = mapped_column(SmallInteger)
+    payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    contact_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ip: Mapped[str | None] = mapped_column(Text, nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(Text, nullable=True)

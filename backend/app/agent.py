@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections import defaultdict
 from datetime import UTC, date
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +14,7 @@ from app.ai import router
 from app.ai.base import AgentRequest, DocumentPart, ImagePart, Part, TextPart, ToolSpec, Turn
 from app.config import get_settings
 from app.db import SessionLocal, set_actor
+from app.identity import wa_address
 from app.models import (
     AIAgent,
     AIAgentKnowledge,
@@ -200,6 +202,12 @@ def build_turns(history: list[Message], media: dict[int, bytes] | None = None) -
 async def build_system(session: AsyncSession, agent: AIAgent) -> str:
     """Parte estable del prompt (se cachea): instrucciones + reglas + conocimiento + memoria del negocio."""
     system = agent.system_prompt + CHANNEL_RULES
+    if agent.max_words:
+        system += f"\nResponde con un máximo de {agent.max_words} palabras por mensaje."
+    if agent.security_enabled:
+        from app.agent_config import SECURITY_DEFAULT
+
+        system += "\n\n## Seguridad\n" + (agent.security_prompt or SECURITY_DEFAULT)
     if agent.use_knowledge:
         docs = (await session.scalars(
             select(KnowledgeDoc).join(AIAgentKnowledge, AIAgentKnowledge.doc_id == KnowledgeDoc.id)
@@ -253,6 +261,14 @@ async def run_agent(conversation_id: int) -> None:
         if agent.use_catalog and await session.scalar(
                 select(exists().where(Product.organization_id == org, Product.available))):
             tools += [SEARCH_PRODUCTS, SEND_PRODUCT]
+        from app import agent_config  # configuración avanzada: etapas, seguridad, origen del cliente
+
+        stages = await agent_config.ai_stages(session, org)
+        if stages:
+            tools.append(agent_config.stage_tool(stages))
+        if agent.security_enabled:
+            tools.append(agent_config.SECURITY_TOOL)
+        security_hit: dict[str, str] = {}
 
         handoff_req: dict[str, object] = {}
 
@@ -288,16 +304,36 @@ async def run_agent(conversation_id: int) -> None:
                 return "\n".join(catalog.describe(p) for p in found) or "No hay productos que coincidan."
             if name == "send_product":
                 return await _send_product(session, conv, agent, args.get("sku") or "")
+            if name == "set_stage":
+                pipeline, _, key = str(args.get("stage") or "").partition(":")
+                try:
+                    deal = await agent_config.set_stage(session, conv, pipeline, key, args.get("reason"))
+                except ValueError as e:
+                    return str(e)
+                return f"Etapa registrada ({pipeline}:{key}, negocio {deal.id}). No lo menciones al cliente."
+            if name == "flag_security":
+                security_hit["kind"] = str(args.get("kind") or "abuse")
+                security_hit["reason"] = str(args.get("reason") or "")
+                return "Registrado. No respondas más a este mensaje."
             raise ValueError(f"Herramienta desconocida: {name}")
 
+        if agent.timezone:
+            try:
+                tz = ZoneInfo(agent.timezone)
+            except (ZoneInfoNotFoundError, ValueError):
+                log.warning("Zona horaria inválida en el agente %s: %s", agent.id, agent.timezone)
         now_local = utcnow().astimezone(tz)
         context = (f"## Contexto\nFecha y hora actual: {WEEKDAYS[now_local.weekday()]} "
                    f"{now_local:%Y-%m-%d %H:%M} ({tz.key}).\n"
                    f"Cliente: {conv.contact.name or 'desconocido'} ({_channel_label(conv)}).")
         if agent.use_customer_memory and conv.contact.memory:
             context += f"\nMemoria del cliente (lo que ya sabemos de él):\n{conv.contact.memory}"
-        if conv.ad_headline:
+        origin = await agent_config.origin_context(session, conv, agent)
+        if origin:
+            context += "\n" + origin
+        elif conv.ad_headline and agent.ad_context_enabled:
             context += f"\nEl cliente llegó desde el anuncio: «{conv.ad_headline}»."
+        context += agent_config.stages_context(stages)
         req = AgentRequest(model="", system=await build_system(session, agent), context=context, turns=turns,
                            tools=tools)
 
@@ -314,6 +350,9 @@ async def run_agent(conversation_id: int) -> None:
             log.exception("Error del agente de IA")
             handoff_req["reason"] = f"Error del bot: {type(e).__name__}"
 
+        if security_hit:  # spam / abuso: la acción configurada reemplaza la respuesta del modelo
+            await agent_config.apply_security(session, conv, agent, security_hit["kind"], security_hit["reason"])
+            return
         # Si un asesor tomó la conversación mientras el modelo pensaba, no respondemos.
         await session.refresh(conv)
         if conv.status != "bot":
@@ -331,7 +370,8 @@ def _channel_label(conv: Conversation) -> str:
     """Canal por el que escribe el cliente (el modelo adapta formato y longitud)."""
     provider = conv.channel.provider
     if provider == "whatsapp_cloud":
-        return f"WhatsApp +{conv.contact.wa_id}"
+        c = conv.contact
+        return f"WhatsApp +{c.wa_id}" if c.wa_id else f"WhatsApp @{c.wa_username or 'usuario'}"
     return {"messenger": "Facebook Messenger", "instagram": "Instagram Direct (respuestas cortas, máx. 1000 caracteres)",
             "webchat": "chat del sitio web"}.get(provider, provider)
 
@@ -351,16 +391,21 @@ async def _send_product(session: AsyncSession, conv: Conversation, agent: AIAgen
         if (cfg["send_as_catalog_message"] and p.in_meta_catalog and cfg["meta_catalog_id"]
                 and conv.channel.provider == "whatsapp_cloud"):
             msg.type = "product"
-            msg.wa_message_id = await client.send_product(conv.contact.wa_id, cfg["meta_catalog_id"], p.sku, p.name)
+            msg.wa_message_id = await client.send_product(wa_address(conv.contact), cfg["meta_catalog_id"], p.sku, p.name)
         elif p.image_url:
             msg.type = "image"
-            msg.wa_message_id = await client.send_image_link(conv.contact.wa_id, p.image_url, caption)
+            msg.wa_message_id = await client.send_image_link(wa_address(conv.contact), p.image_url, caption)
         else:
             msg.type = "text"
-            msg.wa_message_id = (await client.send_text(conv.contact.wa_id, caption))[0]
+            msg.wa_message_id = (await client.send_text(wa_address(conv.contact), caption))[0]
         msg.status = "sent"
     except Exception as e:
         msg.status, msg.error = "failed", str(e)[:2000]
     msg.metadata_ = {"sku": p.sku, "product_id": p.id}
     await record_message(session, conv, msg)
+    if msg.status == "sent":  # producto cotizado al cliente (Cliente 360: productos por interacción)
+        from app.interaction_products import add_product
+
+        await add_product(session, conv, stage="quoted", source="catalog_message", product_id=p.id, message_id=msg.id)
+        await session.commit()
     return "Producto enviado al cliente." if msg.status == "sent" else f"No se pudo enviar: {msg.error}"

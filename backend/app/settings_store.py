@@ -58,6 +58,16 @@ DEFAULTS: dict[str, dict] = {
         "feed_interval_hours": 0,
         "last_sync": None,
     },
+    # Registro maestro del cliente (llaves de identificación, documentos, oportunidades por vehículo)
+    "golden": {
+        "extract_documents": True,  # lee con IA las imágenes y PDF que envía el cliente (cédula, tarjeta de propiedad…)
+        "extract_conversations": True,  # extrae llaves de la conversación (en el análisis del clasificador o al cerrar)
+        "min_confidence": 0.6,  # llaves con menos confianza quedan solo en la auditoría de la extracción
+        "agents_see_sensitive": False,  # los asesores ven documentos y fechas de nacimiento enmascarados
+        "auto_opportunities": True,  # crea oportunidades por vencimientos del vehículo (SOAT, revisión, servicio)
+        "opportunity_days": 30,
+        "followup_on_opportunity": True,
+    },
     "appointments": {
         "enabled": False,
         "title": "Cita",

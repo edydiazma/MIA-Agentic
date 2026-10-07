@@ -102,7 +102,17 @@ async def close_inactive() -> int:
                 Conversation.organization_id == rule.organization_id, Conversation.status != "closed",
                 Conversation.last_message_at < cutoff))).unique().all()
             typ = await typification_by_name(session, rule.organization_id, "Inactividad")
+            # Las conversaciones del bot cuyo agente tiene recuperación propia las cierra app.recovery
+            from app.models import AIAgent, Channel
+            from app.recovery import handled_by_recovery
+
+            with_recovery = set((await session.scalars(select(AIAgent.id).where(
+                AIAgent.organization_id == rule.organization_id, AIAgent.recovery_enabled))).all())
+            defaults = dict((await session.execute(select(Channel.id, Channel.default_ai_agent_id).where(
+                Channel.organization_id == rule.organization_id))).all())
             for conv in convs:
+                if with_recovery and handled_by_recovery(conv, with_recovery, defaults.get(conv.channel_id)):
+                    continue
                 message = (rule.config or {}).get("message")
                 if message and within_session_window(conv):
                     await send_text(session, conv, message, sender_type="bot")

@@ -1,0 +1,893 @@
+{
+ "name": "Concesionario automotriz",
+ "description": "Ficha consolidada para concesionarios (nuevos, usados, taller, repuestos, PQR) a partir de una ficha de Atom con campos sueltos y duplicados.",
+ "fields": [
+  {
+   "key": "nombre_completo",
+   "label": "Nombre completo",
+   "type": "text",
+   "section": "Identidad",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": "full_name",
+   "aliases": [
+    "Nombre completo",
+    "Nombre",
+    "Nombre_cliente"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "apellidos",
+   "label": "Apellidos",
+   "type": "text",
+   "section": "Identidad",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": "last_name",
+   "aliases": [
+    "Apellido_cliente"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "documento",
+   "label": "Número de documento",
+   "type": "text",
+   "section": "Identidad",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": "document",
+   "aliases": [
+    "Cedula",
+    "Nro. de documento"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "tipo_documento",
+   "label": "Tipo de documento",
+   "type": "select",
+   "section": "Identidad",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": "document.subtype",
+   "aliases": [
+    "Tipo de documento"
+   ],
+   "show_in_card": false,
+   "options": [
+    "CC",
+    "CE",
+    "NIT",
+    "PAS",
+    "TI",
+    "PPT"
+   ]
+  },
+  {
+   "key": "correo",
+   "label": "Correo",
+   "type": "text",
+   "section": "Contacto",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": "email",
+   "aliases": [
+    "Correo"
+   ],
+   "show_in_card": true
+  },
+  {
+   "key": "telefono",
+   "label": "Teléfono",
+   "type": "text",
+   "section": "Contacto",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": "phone",
+   "aliases": [
+    "Teléfono"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "direccion",
+   "label": "Dirección",
+   "type": "text",
+   "section": "Contacto",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": "address",
+   "aliases": [
+    "Dirección"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "ciudad",
+   "label": "Ciudad",
+   "type": "text",
+   "section": "Contacto",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Ciudad",
+    "K_ciudad"
+   ],
+   "show_in_card": true
+  },
+  {
+   "key": "sede_preferida",
+   "label": "Sede / concesionario",
+   "type": "text",
+   "section": "Atención",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Sede",
+    "Sede smart",
+    "Centro_ubicacion",
+    "Almacen",
+    "Nombre_concesionario"
+   ],
+   "show_in_card": true
+  },
+  {
+   "key": "linea_interes",
+   "label": "Línea de interés",
+   "type": "select",
+   "section": "Atención",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Intención",
+    "Tipo_servicio",
+    "Categoriaservicio"
+   ],
+   "show_in_card": true,
+   "options": [
+    "Nuevos",
+    "Usados",
+    "Taller",
+    "Repuestos y accesorios",
+    "PQR",
+    "Eventos",
+    "Info. Vehículos"
+   ]
+  },
+  {
+   "key": "condicion_interes",
+   "label": "Condición del vehículo de interés",
+   "type": "select",
+   "section": "Atención",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Condicion_tipo_vehiculo"
+   ],
+   "show_in_card": false,
+   "options": [
+    "Nuevo",
+    "Usado"
+   ]
+  },
+  {
+   "key": "tipo_atencion",
+   "label": "Tipo de atención",
+   "type": "text",
+   "section": "Atención",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Atencion_tipo",
+    "Tipo_atencion",
+    "K_atencion_tipo"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "motivo_contacto",
+   "label": "Motivo de contacto",
+   "type": "long_text",
+   "section": "Atención",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Motivo",
+    "Consulta"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "campana",
+   "label": "Campaña",
+   "type": "text",
+   "section": "Marketing",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Campaña",
+    "C_campana"
+   ],
+   "show_in_card": false,
+   "description": "La campaña y el anuncio exactos quedan en la atribución; este campo es la campaña declarada"
+  },
+  {
+   "key": "fuente",
+   "label": "Fuente / medio de contacto",
+   "type": "text",
+   "section": "Marketing",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Fuente",
+    "Medio de contacto"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "habeas_data",
+   "label": "Autorización de datos (habeas data)",
+   "type": "boolean",
+   "section": "Consentimientos",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": "consent.habeas_data",
+   "aliases": [
+    "Habeas data"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "terminos",
+   "label": "Términos y condiciones / política",
+   "type": "boolean",
+   "section": "Consentimientos",
+   "scope": "contact",
+   "pipeline": null,
+   "maps_to": "consent.terms",
+   "aliases": [
+    "Termino_y_condiciones",
+    "Politica"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "marca_interes",
+   "label": "Marca de interés",
+   "type": "text",
+   "section": "Nuevos",
+   "scope": "deal",
+   "pipeline": "nuevos",
+   "maps_to": "deal.brand",
+   "aliases": [
+    "Marca",
+    "Isuzu"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "modelo_interes",
+   "label": "Modelo de interés",
+   "type": "text",
+   "section": "Nuevos",
+   "scope": "deal",
+   "pipeline": "nuevos",
+   "maps_to": "deal.model",
+   "aliases": [
+    "Custom_modelo_de_interes",
+    "Modelo interes smart",
+    "Nuevo_modelo",
+    "C_nuevo_modelo",
+    "K_nuevo_modelo",
+    "Modelo"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "tipo_vehiculo_interes",
+   "label": "Tipo de vehículo de interés",
+   "type": "text",
+   "section": "Nuevos",
+   "scope": "deal",
+   "pipeline": "nuevos",
+   "maps_to": "deal.vehicle_type",
+   "aliases": [
+    "Tipo de auto interes",
+    "Tipo de vehículo",
+    "Nuevo_tipoveh",
+    "C_nuevo_tipoveh",
+    "K_nuevo_tipoveh"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "version_interes",
+   "label": "Versión / línea de interés",
+   "type": "text",
+   "section": "Nuevos",
+   "scope": "deal",
+   "pipeline": "nuevos",
+   "maps_to": "deal.version",
+   "aliases": [
+    "Version",
+    "Linea",
+    "Nuevo_subtipovh",
+    "Nuevo_clase"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "transmision",
+   "label": "Transmisión",
+   "type": "select",
+   "section": "Nuevos",
+   "scope": "deal",
+   "pipeline": "nuevos",
+   "maps_to": "deal.transmission",
+   "aliases": [
+    "Transmisión"
+   ],
+   "show_in_card": false,
+   "options": [
+    "Automática",
+    "Mecánica"
+   ]
+  },
+  {
+   "key": "forma_pago",
+   "label": "Forma de pago",
+   "type": "select",
+   "section": "Nuevos",
+   "scope": "deal",
+   "pipeline": "nuevos",
+   "maps_to": "deal.payment_method",
+   "aliases": [
+    "Forma de pago ¿crédito o contado?",
+    "Metodo_pago",
+    "Custom_metodo_de_pago",
+    "K_nuevo_tipopag",
+    "Financiamento"
+   ],
+   "show_in_card": false,
+   "options": [
+    "Contado",
+    "Crédito",
+    "Leasing"
+   ]
+  },
+  {
+   "key": "tiempo_compra",
+   "label": "Tiempo estimado de compra",
+   "type": "text",
+   "section": "Nuevos",
+   "scope": "deal",
+   "pipeline": "nuevos",
+   "maps_to": "deal.purchase_timeframe",
+   "aliases": [
+    "Tiempo_compra",
+    "K_nuevo_tiempo",
+    "Tiempo estimado"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "test_drive",
+   "label": "Test drive",
+   "type": "boolean",
+   "section": "Nuevos",
+   "scope": "deal",
+   "pipeline": "nuevos",
+   "maps_to": "deal.test_drive",
+   "aliases": [
+    "Test drive"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "monto",
+   "label": "Monto",
+   "type": "currency",
+   "section": "Nuevos",
+   "scope": "deal",
+   "pipeline": "nuevos",
+   "maps_to": "deal.amount",
+   "aliases": [
+    "Monto"
+   ],
+   "show_in_card": false,
+   "currency": "USD"
+  },
+  {
+   "key": "nivel_interes",
+   "label": "Lead caliente",
+   "type": "text",
+   "section": "Nuevos",
+   "scope": "deal",
+   "pipeline": "nuevos",
+   "maps_to": "deal.interest_level",
+   "aliases": [
+    "Hot"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "presupuesto_usado",
+   "label": "Presupuesto (usados)",
+   "type": "currency",
+   "section": "Usados",
+   "scope": "deal",
+   "pipeline": "usados",
+   "maps_to": "deal.amount",
+   "aliases": [
+    "C_usados_ppto",
+    "K_usados_ppto",
+    "U_presupuesto",
+    "Usados_ppto"
+   ],
+   "show_in_card": false,
+   "currency": "COP"
+  },
+  {
+   "key": "tipo_vehiculo_usado",
+   "label": "Tipo de vehículo (usados)",
+   "type": "text",
+   "section": "Usados",
+   "scope": "deal",
+   "pipeline": "usados",
+   "maps_to": "deal.vehicle_type",
+   "aliases": [
+    "C_usados_tipove",
+    "K_usados_tipove",
+    "Usado_tipoveh",
+    "Usados_tipo"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "intencion_usado",
+   "label": "Intención (usados)",
+   "type": "select",
+   "section": "Usados",
+   "scope": "deal",
+   "pipeline": "usados",
+   "maps_to": "deal.intent",
+   "aliases": [
+    "Usado_intencion"
+   ],
+   "show_in_card": false,
+   "options": [
+    "Comprar",
+    "Vender",
+    "Retoma"
+   ]
+  },
+  {
+   "key": "valor_usado",
+   "label": "Valor del usado",
+   "type": "currency",
+   "section": "Usados",
+   "scope": "deal",
+   "pipeline": "usados",
+   "maps_to": "deal.trade_in_value",
+   "aliases": [
+    "Valor_usado"
+   ],
+   "show_in_card": false,
+   "currency": "COP"
+  },
+  {
+   "key": "placa",
+   "label": "Placa",
+   "type": "text",
+   "section": "Vehículo",
+   "scope": "vehicle",
+   "pipeline": null,
+   "maps_to": "plate",
+   "aliases": [
+    "Placa",
+    "Numero_placa",
+    "Placas_vehiculo",
+    "C_taller_placa",
+    "K_taller_placa"
+   ],
+   "show_in_card": true
+  },
+  {
+   "key": "kilometraje",
+   "label": "Kilometraje",
+   "type": "number",
+   "section": "Vehículo",
+   "scope": "vehicle",
+   "pipeline": null,
+   "maps_to": "vehicle.mileage_km",
+   "aliases": [
+    "Kilometraje",
+    "Kilometraje vehiculo",
+    "C_taller_km",
+    "K_taller_km",
+    "C_taller_kilometraje"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "marca_vehiculo",
+   "label": "Marca del vehículo",
+   "type": "text",
+   "section": "Vehículo",
+   "scope": "vehicle",
+   "pipeline": null,
+   "maps_to": "vehicle.make",
+   "aliases": [
+    "Marca_vehiculo",
+    "C_taller_marca"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "anio_vehiculo",
+   "label": "Año del vehículo",
+   "type": "number",
+   "section": "Vehículo",
+   "scope": "vehicle",
+   "pipeline": null,
+   "maps_to": "vehicle.year",
+   "aliases": [
+    "Vehiculo_año",
+    "C_taller_año"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "servicio_taller",
+   "label": "Servicio de taller",
+   "type": "text",
+   "section": "Taller",
+   "scope": "appointment",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "C_taller_serv",
+    "K_taller_serv",
+    "Taller_servicio",
+    "Servicio",
+    "Motivo de servicio",
+    "Tipo_mantenimie",
+    "Tipo de servicio por agendar"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "fecha_cita",
+   "label": "Fecha de la cita",
+   "type": "date",
+   "section": "Taller",
+   "scope": "appointment",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Citafecha",
+    "Fecha_cita",
+    "C_taller_fecha",
+    "K_taller_fecha",
+    "Fecha deseada",
+    "Fecha_visita",
+    "Fecha"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "hora_cita",
+   "label": "Hora de la cita",
+   "type": "text",
+   "section": "Taller",
+   "scope": "appointment",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Citahora",
+    "Hora_cita",
+    "C_taller_hora",
+    "K_taller_hora",
+    "Hora deseada",
+    "C_taller_horario"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "fecha_hora_cita",
+   "label": "Fecha y hora de la cita",
+   "type": "datetime",
+   "section": "Taller",
+   "scope": "appointment",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "C_taller_fyhora",
+    "Fecha_hora"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "codigo_cita",
+   "label": "Código de la cita",
+   "type": "text",
+   "section": "Taller",
+   "scope": "appointment",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Cod_cita",
+    "C_taller_codcit"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "asesor_taller",
+   "label": "Asesor / técnico de taller",
+   "type": "text",
+   "section": "Taller",
+   "scope": "appointment",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "C_taller_asesor",
+    "Asesor_fullname",
+    "Tecnico_c"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "taller",
+   "label": "Taller / puesto",
+   "type": "text",
+   "section": "Taller",
+   "scope": "appointment",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Nombre_taller",
+    "C_taller_almace",
+    "C_taller_puesto",
+    "Puesto"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "dejar_auto",
+   "label": "Deja el vehículo",
+   "type": "boolean",
+   "section": "Taller",
+   "scope": "appointment",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Dejar auto"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "accesorios",
+   "label": "Accesorios de interés",
+   "type": "text",
+   "section": "Repuestos y accesorios",
+   "scope": "deal",
+   "pipeline": "repuestos_accesorios",
+   "maps_to": "deal.accessories",
+   "aliases": [
+    "Am_accesorios"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "repuesto",
+   "label": "Repuesto",
+   "type": "text",
+   "section": "Repuestos y accesorios",
+   "scope": "deal",
+   "pipeline": "repuestos_accesorios",
+   "maps_to": "deal.part",
+   "aliases": [
+    "Repuesto"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "tipo_producto_ar",
+   "label": "Tipo de producto (repuestos/accesorios)",
+   "type": "text",
+   "section": "Repuestos y accesorios",
+   "scope": "deal",
+   "pipeline": "repuestos_accesorios",
+   "maps_to": "deal.product_type",
+   "aliases": [
+    "Ar_tipo",
+    "Tipo_producto_ar"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "modelo_vehiculo_ar",
+   "label": "Modelo del vehículo (repuestos/accesorios)",
+   "type": "text",
+   "section": "Repuestos y accesorios",
+   "scope": "deal",
+   "pipeline": "repuestos_accesorios",
+   "maps_to": "deal.vehicle_model",
+   "aliases": [
+    "Ar_modelo",
+    "K_ar_modelo"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "anio_vehiculo_ar",
+   "label": "Año del vehículo (repuestos/accesorios)",
+   "type": "text",
+   "section": "Repuestos y accesorios",
+   "scope": "deal",
+   "pipeline": "repuestos_accesorios",
+   "maps_to": "deal.vehicle_year",
+   "aliases": [
+    "K_ar_ano"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "tipo_pqr",
+   "label": "Tipo de PQR",
+   "type": "text",
+   "section": "PQR",
+   "scope": "deal",
+   "pipeline": "pqr",
+   "maps_to": "deal.pqr_type",
+   "aliases": [
+    "Tipo_pqr",
+    "K_atencion_pqr"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "asistencia_evento",
+   "label": "Confirmación de asistencia a evento",
+   "type": "boolean",
+   "section": "Eventos",
+   "scope": "deal",
+   "pipeline": "eventos",
+   "maps_to": "deal.attendance",
+   "aliases": [
+    "Confirmación asistencia eventos"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "saludo_inicial",
+   "label": "Saludo inicial (bot)",
+   "type": "text",
+   "section": "Técnico",
+   "scope": "flow",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Saludo inicial"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "mensaje_inicial",
+   "label": "Mensaje inicial del cliente (bot)",
+   "type": "text",
+   "section": "Técnico",
+   "scope": "flow",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Informacion"
+   ],
+   "show_in_card": false,
+   "description": "El mensaje disparador ya queda en la atribución"
+  },
+  {
+   "key": "ruta_conversion",
+   "label": "Ruta de conversión (bot)",
+   "type": "text",
+   "section": "Técnico",
+   "scope": "flow",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Var_ruta_conversion"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "tiempo_bot",
+   "label": "Variable de tiempo (bot)",
+   "type": "text",
+   "section": "Técnico",
+   "scope": "flow",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Tiemp"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "hora_cita_iso",
+   "label": "Hora de cita ISO (bot)",
+   "type": "text",
+   "section": "Técnico",
+   "scope": "flow",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Hora_cita_iso",
+    "Hora_cita_iso_final"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "id_servicio",
+   "label": "Id de servicio (bot)",
+   "type": "text",
+   "section": "Técnico",
+   "scope": "flow",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Idservicio"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "id_asesor",
+   "label": "Id de asesor (bot)",
+   "type": "text",
+   "section": "Técnico",
+   "scope": "flow",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Idasesor"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "centro_id",
+   "label": "Id de centro (bot)",
+   "type": "text",
+   "section": "Técnico",
+   "scope": "flow",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Centroid"
+   ],
+   "show_in_card": false
+  },
+  {
+   "key": "comentario_bot",
+   "label": "Comentario de asignación (bot)",
+   "type": "text",
+   "section": "Técnico",
+   "scope": "flow",
+   "pipeline": null,
+   "maps_to": null,
+   "aliases": [
+    "Comentario"
+   ],
+   "show_in_card": false,
+   "description": "Ej. «Asignación por tiempo sin respuesta»: es un evento de la conversación, no un dato del cliente"
+  }
+ ]
+}

@@ -1,8 +1,10 @@
 import csv
 import io
 import re
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +12,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import current_agent
 from app.db import get_session
 from app.fields import NATIVE_FIELDS, coerce, fields_by_key, set_custom, set_native
-from app.models import Agent, Contact, ContactTag, Conversation, Tag, utcnow
+from app.models import (
+    Agent,
+    Channel,
+    Contact,
+    ContactTag,
+    Conversation,
+    Flow,
+    InteractionProduct,
+    Tag,
+    Typification,
+    utcnow,
+)
 from app.realtime import hub
 from app.schemas import ContactUpdate
 from app.service import close, contact_out, conversation_out, tag_by_name, typification_by_name
@@ -64,26 +77,244 @@ async def set_contact_tags(session: AsyncSession, contact: Contact, names: list[
                                                            ContactTag.tag_id == current[name].tag_id))
 
 
+# --- Lista de clientes (columnas, filtros, orden, exportación) — docs/data-model.md §14 ---------------------
+SORTS = ("name", "created_at", "updated_at", "first_interaction_at", "last_interaction_at", "conversations_count",
+         "messages_in", "products_count", "lifetime_days", "days_since_last_interaction", "first_source_at")
+SOURCE_FIELDS = ("first_source_channel", "first_source_ad_id", "first_source_campaign", "first_source_label",
+                 "first_source_at", "last_source_channel", "last_source_ad_id", "last_source_campaign",
+                 "last_source_label", "last_source_at")
+
+
+class ContactFilters:
+    """Filtros compartidos por la lista, el conteo y la exportación CSV."""
+
+    def __init__(
+        self,
+        q: str | None = None, tag: str | None = None, tags: str | None = None, stage: str | None = None,
+        blocked: bool = False, channels: str | None = None, channel_ids: str | None = None,
+        agent_id: int | None = None,
+        typification_id: int | None = None, created_from: date | None = None, created_to: date | None = None,
+        updated_from: date | None = None, updated_to: date | None = None, last_interaction_from: date | None = None,
+        last_interaction_to: date | None = None, inactive_days_gte: float | None = None,
+        has_products: bool | None = None, product: str | None = None, source_channel: str | None = None,
+        source_ad_id: str | None = None, source_campaign: str | None = None,
+        sort: str | None = Query(default=None, pattern="^(" + "|".join(SORTS) + ")$"),
+        order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    ):
+        self.__dict__.update({k: v for k, v in locals().items() if k != "self"})
+
+    def where(self, org: int):
+        def day_start(d: date) -> datetime:
+            return datetime(d.year, d.month, d.day, tzinfo=UTC)
+
+        conds = [Contact.organization_id == org, Contact.blocked == self.blocked]
+        if self.q:
+            like = f"%{self.q.strip().lstrip('@')}%"
+            conds.append(or_(Contact.name.ilike(like), Contact.wa_id.ilike(like), Contact.email.ilike(like),
+                             Contact.wa_username.ilike(like), Contact.wa_bsuid.ilike(like)))
+        for name in [t for t in ([self.tag] if self.tag else []) + (self.tags or "").split(",") if t and t.strip()]:
+            conds.append(exists().where(ContactTag.contact_id == Contact.id, ContactTag.tag_id == Tag.id,
+                                        Tag.name == name.strip().lower(), Tag.organization_id == org))
+        if self.stage:
+            conds.append(Contact.stage == self.stage)
+        # `channels`: tipos de canal (whatsapp_cloud, instagram…) o ids de canal; `channel_ids`: ids de canal
+        tokens = [c.strip() for c in f"{self.channels or ''},{self.channel_ids or ''}".split(",") if c.strip()]
+        providers = [t for t in tokens if not t.isdigit()]
+        ids = [int(t) for t in tokens if t.isdigit()]
+        if providers or ids:
+            conds.append(or_(*([Contact.channel_providers.overlap(providers)] if providers else []),
+                             *([Contact.channel_ids.overlap(ids)] if ids else [])))
+        if self.agent_id:
+            conds.append(Contact.last_agent_id == self.agent_id)
+        if self.typification_id:
+            conds.append(Contact.last_typification_id == self.typification_id)
+        for col, lo, hi in ((Contact.created_at, self.created_from, self.created_to),
+                            (Contact.updated_at, self.updated_from, self.updated_to),
+                            (Contact.last_interaction_at, self.last_interaction_from, self.last_interaction_to)):
+            if lo:
+                conds.append(col >= day_start(lo))
+            if hi:
+                conds.append(col < day_start(hi) + timedelta(days=1))
+        if self.inactive_days_gte is not None:
+            conds.append(Contact.last_interaction_at <= utcnow() - timedelta(days=self.inactive_days_gte))
+        if self.has_products is not None:
+            conds.append(Contact.products_count > 0 if self.has_products else Contact.products_count == 0)
+        if self.source_channel:
+            conds.append(Contact.first_source_channel == self.source_channel.strip())
+        if self.source_ad_id:
+            conds.append(Contact.first_source_ad_id == self.source_ad_id.strip())
+        if self.source_campaign:
+            conds.append(Contact.first_source_campaign.ilike(f"%{self.source_campaign.strip()}%"))
+        if self.product:
+            p = self.product.strip()
+            match = [InteractionProduct.external_ref == p, InteractionProduct.name.ilike(f"%{p}%")]
+            if p.isdigit():
+                match.append(InteractionProduct.product_id == int(p))
+            conds.append(exists().where(InteractionProduct.contact_id == Contact.id, or_(*match)))
+        return conds
+
+    def order_by(self):
+        if not self.sort:
+            first = Contact.blocked_at.desc() if self.blocked else Contact.created_at.desc()
+            return [first, Contact.id.desc()]
+        asc = self.order == "asc"
+        if self.sort == "lifetime_days":
+            expr = Contact.last_interaction_at - Contact.first_interaction_at
+        elif self.sort == "days_since_last_interaction":
+            expr, asc = Contact.last_interaction_at, not asc  # más días = interacción más antigua
+        else:
+            expr = getattr(Contact, self.sort)
+        return [(expr.asc() if asc else expr.desc()).nulls_last(), Contact.id.desc()]
+
+
+async def _refs(session: AsyncSession, contacts: list[Contact]) -> dict[int, dict]:
+    """Nombres de último asesor, tipificación y flujo (3 consultas para toda la página, sin N+1)."""
+    async def names(model, ids):
+        ids = {i for i in ids if i}
+        if not ids:
+            return {}
+        return dict((await session.execute(select(model.id, model.name).where(model.id.in_(ids)))).all())
+
+    agents = await names(Agent, [c.last_agent_id for c in contacts])
+    typs = await names(Typification, [c.last_typification_id for c in contacts])
+    flows = await names(Flow, [c.last_flow_id for c in contacts])
+    channel_ids = {i for c in contacts for i in (c.channel_ids or [])}
+    channels = {ch.id: {"id": ch.id, "name": ch.name, "provider": ch.provider, "display_phone": ch.display_phone}
+                for ch in (await session.execute(select(Channel.id, Channel.name, Channel.provider,
+                                                        Channel.display_phone)
+                                                 .where(Channel.id.in_(channel_ids)))).all()} if channel_ids else {}
+
+    def ref(table, key):
+        return {"id": key, "name": table[key]} if key in table else None
+
+    return {c.id: {"last_agent": ref(agents, c.last_agent_id), "last_typification": ref(typs, c.last_typification_id),
+                   "last_flow": ref(flows, c.last_flow_id),
+                   "channels": [channels[i] for i in (c.channel_ids or []) if i in channels]} for c in contacts}
+
+
+async def contact_rows(session: AsyncSession, contacts: list[Contact]) -> list[dict]:
+    refs = await _refs(session, contacts)
+    return [{**contact_out(c), **refs[c.id], **{f: _iso(getattr(c, f)) for f in SOURCE_FIELDS}} for c in contacts]
+
+
+def _iso(v):
+    return v.isoformat() if isinstance(v, datetime) else v
+
+
 @router.get("")
 async def list_contacts(
-    q: str | None = None, tag: str | None = None, stage: str | None = None, blocked: bool = False,
-    offset: int = 0, limit: int = Query(default=50, le=500),
+    f: ContactFilters = Depends(), offset: int = 0, limit: int = Query(default=50, le=500),
     agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session),
 ):
     org = agent.organization_id
-    stmt = select(Contact).where(Contact.organization_id == org, Contact.blocked == blocked)
-    if q:
-        like = f"%{q.strip()}%"
-        stmt = stmt.where(or_(Contact.name.ilike(like), Contact.wa_id.ilike(like), Contact.email.ilike(like)))
-    if tag:
-        stmt = stmt.where(exists().where(ContactTag.contact_id == Contact.id, ContactTag.tag_id == Tag.id,
-                                         Tag.name == tag.strip().lower(), Tag.organization_id == org))
-    if stage:
-        stmt = stmt.where(Contact.stage == stage)
-    total = await session.scalar(select(func.count()).select_from(stmt.subquery()))
-    order = Contact.blocked_at.desc() if blocked else Contact.created_at.desc()
-    rows = (await session.scalars(stmt.order_by(order, Contact.id.desc()).offset(offset).limit(limit))).all()
-    return {"total": total, "items": [contact_out(c) for c in rows]}
+    conds = f.where(org)
+    total = await session.scalar(select(func.count(Contact.id)).where(*conds))
+    rows = (await session.scalars(select(Contact).where(*conds).order_by(*f.order_by())
+                                  .offset(offset).limit(limit))).all()
+    return {"total": total, "items": await contact_rows(session, list(rows))}
+
+
+BASE_COLUMNS = [
+    ("name", "Nombre completo", "text", True, True, "Básico"),
+    ("wa_id", "Teléfono", "text", False, True, "Básico"),
+    ("wa_username", "Usuario de WhatsApp", "text", False, True, "Básico"),
+    ("wa_bsuid", "ID de WhatsApp (BSUID)", "text", False, False, "Básico"),
+    ("email", "Correo", "text", False, False, "Básico"),
+    ("tags", "Etiquetas", "tags", False, True, "Básico"),
+    ("channels", "Canales", "channels", False, True, "Básico"),
+    ("channel_providers", "Tipos de canal", "channels", False, False, "Básico"),
+    ("last_agent", "Agente", "ref", False, True, "Básico"),
+    ("last_typification", "Tipificación", "ref", False, True, "Básico"),
+    ("stage", "Etapa", "text", False, False, "Básico"),
+    ("created_at", "F. Creación", "date", True, True, "Básico"),
+    ("updated_at", "F. Actualización", "date", True, True, "Básico"),
+    ("first_interaction_at", "Primera interacción", "date", True, True, "Interacción"),
+    ("last_interaction_at", "Última interacción", "date", True, True, "Interacción"),
+    ("first_inbound_at", "Primer mensaje del cliente", "date", False, False, "Interacción"),
+    ("last_inbound_at", "Último mensaje del cliente", "date", False, False, "Interacción"),
+    ("last_outbound_at", "Último mensaje enviado", "date", False, False, "Interacción"),
+    ("lifetime_days", "Días entre primera y última", "number", True, False, "Interacción"),
+    ("days_since_last_interaction", "Días sin interacción", "number", True, True, "Interacción"),
+    ("conversations_count", "Conversaciones", "number", True, False, "Interacción"),
+    ("messages_in", "Mensajes recibidos", "number", True, False, "Interacción"),
+    ("messages_out", "Mensajes enviados", "number", False, False, "Interacción"),
+    ("flow_runs_count", "Flujos ejecutados", "number", False, False, "Interacción"),
+    ("last_flow", "Último flujo", "ref", False, False, "Interacción"),
+    ("last_flow_at", "Fecha último flujo", "date", False, False, "Interacción"),
+    ("products_count", "Productos", "number", True, False, "Productos"),
+    ("last_product_name", "Último producto", "text", False, True, "Productos"),
+    ("first_source_label", "Fuente (primer toque)", "text", False, True, "Fuente"),
+    ("last_source_label", "Última fuente", "text", False, False, "Fuente"),
+    ("first_source_campaign", "Campaña de origen", "text", False, False, "Fuente"),
+    ("first_source_ad_id", "Anuncio de origen", "text", False, False, "Fuente"),
+    ("first_source_at", "Fecha de la fuente", "date", True, False, "Fuente"),
+]
+
+
+async def _columns(session: AsyncSession, org: int) -> list[dict]:
+    cols = [{"key": k, "label": label, "type": t, "sortable": s, "default_visible": v, "group": g}
+            for k, label, t, s, v, g in BASE_COLUMNS]
+    for fdef in (await fields_by_key(session, org)).values():
+        cols.append({"key": f"custom:{fdef.key}", "label": fdef.label,
+                     "type": {"number": "number", "date": "date"}.get(fdef.type, "text"), "sortable": False,
+                     "default_visible": False, "group": "Campos personalizados"})
+    return cols
+
+
+@router.get("/columns")
+async def list_columns(agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
+    return await _columns(session, agent.organization_id)
+
+
+def _cell(row: dict, key: str) -> str:
+    if key.startswith("custom:"):
+        value = (row.get("custom_fields") or {}).get(key.split(":", 1)[1])
+    else:
+        value = row.get(key)
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return str(value.get("name") or "")
+    if isinstance(value, list):
+        return ", ".join(str(v.get("display_phone") or v.get("name")) if isinstance(v, dict) else str(v)
+                         for v in value)
+    if isinstance(value, bool):
+        return "Sí" if value else "No"
+    return str(value)
+
+
+@router.get("/export.csv")
+async def export_contacts(
+    f: ContactFilters = Depends(), columns: str | None = None,
+    agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session),
+):
+    org = agent.organization_id
+    available = {c["key"]: c["label"] for c in await _columns(session, org)}
+    keys = [k for k in (columns or "").split(",") if k in available] or \
+        [k for k, *_rest, visible, _g in BASE_COLUMNS if visible]
+    conds, order = f.where(org), f.order_by()
+
+    async def generate():
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        buf.write("\ufeff")  # BOM: Excel abre bien las tildes
+        writer.writerow([available[k] for k in keys])
+        yield buf.getvalue()
+        offset = 0
+        while True:
+            batch = (await session.scalars(select(Contact).where(*conds).order_by(*order)
+                                           .offset(offset).limit(500))).all()
+            if not batch:
+                break
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            for row in await contact_rows(session, list(batch)):
+                writer.writerow([_cell(row, k) for k in keys])
+            yield buf.getvalue()
+            offset += len(batch)
+
+    return StreamingResponse(generate(), media_type="text/csv; charset=utf-8",
+                             headers={"Content-Disposition": 'attachment; filename="clientes.csv"'})
 
 
 @router.get("/tags")
@@ -131,10 +362,14 @@ async def import_contacts(
     name_col = next((cols[k] for k in ("nombre", "name") if k in cols), None)
     email_col = next((cols[k] for k in ("email", "correo") if k in cols), None)
     extra = [t for t in tags.split(",") if t.strip()]
-    defs = await fields_by_key(session, org)
+    from app.golden.fields import field_index, resolve_field, write_value
+
+    index = await field_index(session, org)  # clave, etiqueta o alias (Atom, otros sistemas)
     by_header = {}
-    for header_key, header in cols.items():
-        f = defs.get(header_key) or next((d for d in defs.values() if d.label.lower() == header_key), None)
+    for header in cols.values():
+        if header in (phone_col, name_col, email_col):
+            continue
+        f = await resolve_field(session, org, header, index)
         if f:
             by_header[header] = f
 
@@ -160,13 +395,10 @@ async def import_contacts(
         if extra:
             await set_contact_tags(session, contact, extra, "import", replace=False)
         for header, f in by_header.items():
-            try:
-                value = coerce(f, row.get(header))
+            try:  # cada valor va a su destino: registro maestro, vehículo, consentimiento, oportunidad o ficha
+                await write_value(session, contact, f, row.get(header), "import")
             except ValueError:
                 field_errors += 1
-                continue
-            if value is not None:
-                await set_custom(session, contact, f, value, "import")
         await session.flush()
     await session.commit()
     return {"created": created, "updated": updated, "invalid": invalid, "field_errors": field_errors,

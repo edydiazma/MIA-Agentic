@@ -16,11 +16,17 @@ import {
   type FollowUp,
   type Stage,
   phoneLabel,
+  contactLabel,
 } from "@/lib/api";
-import { Badge, ErrorBox, Field, Loading, Modal, useAction, useApi } from "@/components/ui";
+import { Badge, ErrorBox, Field, Loading, Modal, Tabs, useAction, useApi } from "@/components/ui";
 import CustomFieldsEditor from "@/components/fields/CustomFieldsEditor";
 import FieldHistory from "@/components/fields/FieldHistory";
 import DealsSection from "@/components/crm/DealsSection";
+import ContactInsights, { WhatsAppIdentity } from "@/components/clients/ContactInsights";
+import InteractionProducts from "@/components/products/InteractionProducts";
+import type { ContactRow } from "@/lib/customer-types";
+import MasterData from "@/components/golden/MasterData";
+import { SourceLine, type SourceFields } from "@/components/ads/SourceLine";
 
 type Detail = Contact & { conversations: Conversation[] };
 
@@ -54,6 +60,7 @@ export default function ContactDetail({
   const [form, setForm] = useState({ name: "", email: "", stage: "lead" as Stage, tags: "", notes: "" });
   const [saved, setSaved] = useState(false);
   const [historyKey, setHistoryKey] = useState(0);
+  const [tab, setTab] = useState<"summary" | "master">("summary");
   const [run, busy, actionError] = useAction();
 
   useEffect(() => {
@@ -99,7 +106,7 @@ export default function ContactDetail({
   return (
     <Modal
       wide
-      title={data ? data.name || `+${data.wa_id}` : "Cliente"}
+      title={data ? contactLabel(data as ContactRow) : "Cliente"}
       onClose={onClose}
       footer={
         <>
@@ -109,7 +116,7 @@ export default function ContactDetail({
           <span style={{ flex: 1 }} />
           {saved && <span className="muted small">Guardado</span>}
           <button onClick={onClose}>Cerrar</button>
-          <button className="primary" onClick={save} disabled={busy || !data}>
+          <button className="primary" onClick={save} disabled={busy || !data || tab !== "summary"}>
             Guardar
           </button>
         </>
@@ -118,11 +125,28 @@ export default function ContactDetail({
       {loading && !data && <Loading />}
       <ErrorBox error={error || actionError} />
       {data && (
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          tabs={[
+            ["summary", "Resumen"],
+            ["master", "Datos maestros"],
+          ]}
+        />
+      )}
+      {data && tab === "master" && <MasterData contactId={data.id} />}
+      {data && tab === "summary" && (
         <>
           <div className="inline">
             <span className="muted">{phoneLabel(data.wa_id)}</span>
             {data.marketing_opt_out && <Badge tone="warn">No acepta marketing</Badge>}
             <span className="muted small">Cliente desde {fmtDateTime(data.created_at)}</span>
+          </div>
+          <WhatsAppIdentity contact={data as ContactRow} />
+          <SourceLine contact={data as unknown as SourceFields} />
+          <div className="grid2">
+            <ContactInsights contact={data} />
+            <InteractionProducts contactId={data.id} />
           </div>
           <div className="grid2">
             <Field label="Nombre">

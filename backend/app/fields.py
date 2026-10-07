@@ -1,14 +1,15 @@
 """Ficha del cliente: campos personalizados tipados (contact_field_values) e historial (contact_changes)."""
 
 import re
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Contact, ContactChange, ContactField, ContactFieldValue, utcnow
 
-FIELD_TYPES = ("text", "long_text", "number", "date", "select", "boolean", "email", "phone")
+FIELD_TYPES = ("text", "long_text", "number", "currency", "date", "datetime", "select", "boolean", "email",
+               "phone")
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,49}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 TRUE = {"si", "sí", "true", "1", "yes", "verdadero", "x"}
@@ -56,7 +57,7 @@ def coerce(field: ContactField, raw) -> str | int | float | bool | None:
             return False
         raise ValueError(f"«{field.label}» debe ser sí o no")
     value = str(raw).strip()
-    if t == "number":
+    if t in ("number", "currency"):
         n = parse_number(value)
         if n is None:
             raise ValueError(f"«{field.label}» debe ser un número")
@@ -66,6 +67,11 @@ def coerce(field: ContactField, raw) -> str | int | float | bool | None:
             return date.fromisoformat(value[:10]).isoformat()
         except ValueError:
             raise ValueError(f"«{field.label}» debe ser una fecha AAAA-MM-DD") from None
+    if t == "datetime":
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).isoformat()
+        except ValueError:
+            raise ValueError(f"«{field.label}» debe ser una fecha y hora ISO (AAAA-MM-DDTHH:MM)") from None
     if t == "select":
         options = field.options or []
         match = next((o for o in options if o.lower() == value.lower()), None)
@@ -138,7 +144,7 @@ async def set_custom(
             row = ContactFieldValue(contact_id=contact.id, field_id=field.id, source=source)
             session.add(row)
         row.value_text = row.value_number = row.value_date = row.value_bool = None
-        if field.type == "number":
+        if field.type in ("number", "currency"):
             row.value_number = value
         elif field.type == "date":
             row.value_date = date.fromisoformat(value)

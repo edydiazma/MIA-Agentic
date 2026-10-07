@@ -48,6 +48,10 @@ def _text_of(m: dict) -> str | None:
         return reply.get("title")
     if t == "button":
         return m["button"].get("text")
+    if t == "order":
+        items = (m.get("order") or {}).get("product_items") or []
+        lines = [f"{i.get('quantity', 1)} × {i.get('product_retailer_id')}" for i in items]
+        return "[Pedido] " + ", ".join(lines) + (f" — {m['order']['text']}" if (m.get("order") or {}).get("text") else "")
     if t == "contacts":
         names = [c.get("name", {}).get("formatted_name", "") for c in m["contacts"]]
         phones = [p.get("phone", "") for c in m["contacts"] for p in c.get("phones", [])]
@@ -58,6 +62,8 @@ def _text_of(m: dict) -> str | None:
 def _msg_type(t: str) -> str:
     if t == "button":
         return "interactive"
+    if t == "order":
+        return "product"
     return t if t in MESSAGE_TYPES else "unsupported"
 
 
@@ -85,9 +91,11 @@ async def process_webhook(payload: dict) -> None:
                     phone_number_id = value.get("metadata", {}).get("phone_number_id")
                     for status in value.get("statuses", []):
                         await _handle_status(status, phone_number_id)
-                    profiles = {c["wa_id"]: c.get("profile", {}).get("name") for c in value.get("contacts", [])}
+                    contacts = value.get("contacts", [])
                     for m in value.get("messages", []):
-                        await _handle_message(phone_number_id, m, profiles.get(m["from"]))
+                        await _handle_message(phone_number_id, m, _sender(contacts, m))
+                elif field == "user_id_update":  # el cliente cambió de número: BSUID nuevo (app/identity.py)
+                    await _handle_user_id_update(value)
                 else:
                     await _handle_account_event(entry.get("id"), field, value)
             except Exception as e:
@@ -129,15 +137,16 @@ async def _handle_status(status: dict, phone_number_id: str | None = None) -> No
                 recipient.delivered_at = recipient.delivered_at or now
 
         if org and any(e.get("code") == OPT_OUT_CODE for e in errors):
-            contact = await session.scalar(select(Contact).where(
-                Contact.organization_id == org, Contact.wa_id == status.get("recipient_id")))
+            who = (Contact.wa_bsuid == status["recipient_user_id"]) if status.get("recipient_user_id") \
+                else (Contact.wa_id == status.get("recipient_id"))
+            contact = await session.scalar(select(Contact).where(Contact.organization_id == org, who))
             if contact and not contact.marketing_opt_out:
                 contact.marketing_opt_out, contact.opt_out_at = True, now
                 await create_alert(
                     session, org, severity="warning", layer="contact", source="meta",
                     title="Un contacto pidió dejar de recibir marketing",
                     description="Solo puedes enviarle mensajes de utilidad y autenticación; "
-                    "los mensajes de marketing generarán un error.", ref=contact.wa_id)
+                    "los mensajes de marketing generarán un error.", ref=contact.wa_id or contact.wa_bsuid)
 
         if msg:
             pricing = status.get("pricing") or {}
@@ -170,6 +179,9 @@ async def _handle_account_event(waba_id: str | None, field: str, v: dict) -> Non
             return
         if field == "message_template_status_update":
             await templates.invalidate(session, org)
+            from app.onboarding.meta import on_template_status  # estado y motivo de rechazo al instante
+
+            await on_template_status(session, org, v)
             await session.commit()
             event = v.get("event")
             if event in ("REJECTED", "PAUSED", "DISABLED", "FLAGGED", "PENDING_DELETION"):
@@ -202,7 +214,34 @@ async def _handle_account_event(waba_id: str | None, field: str, v: dict) -> Non
 
 
 # --- Mensajes entrantes ---------------------------------------------------------
-async def _handle_message(phone_number_id: str, m: dict, profile_name: str | None) -> None:
+def _sender(contacts: list[dict], m: dict) -> dict:
+    """Quién escribe: teléfono (puede faltar), BSUID (user_id), BSUID padre, @usuario y nombre del perfil."""
+    phone, bsuid = m.get("from"), m.get("from_user_id")
+    match = next((c for c in contacts if (bsuid and c.get("user_id") == bsuid) or (phone and c.get("wa_id") == phone)),
+                 contacts[0] if len(contacts) == 1 else {})
+    profile = match.get("profile") or {}
+    return {"phone": phone or match.get("wa_id"), "bsuid": bsuid or match.get("user_id"),
+            "parent_bsuid": m.get("from_parent_user_id") or match.get("parent_user_id"),
+            "username": profile.get("username"), "name": profile.get("name")}
+
+
+async def _handle_user_id_update(value: dict) -> None:
+    from app.identity import apply_user_id_update
+
+    phone_number_id = (value.get("metadata") or {}).get("phone_number_id")
+    async with SessionLocal() as session:
+        org = await session.scalar(select(Channel.organization_id).where(Channel.phone_number_id == phone_number_id))
+        if not org:
+            log.warning("user_id_update para un número no registrado: %s", phone_number_id)
+            return
+        for update in value.get("user_id_update", []):
+            await apply_user_id_update(session, org, update)
+        await session.commit()
+
+
+async def _handle_message(phone_number_id: str, m: dict, sender: dict | str | None) -> None:
+    if not isinstance(sender, dict):  # compatibilidad: antes se pasaba solo el nombre del perfil
+        sender = {"phone": m.get("from"), "name": sender}
     if m.get("type") in ("reaction", "system", "ephemeral"):
         return
     async with SessionLocal() as session:
@@ -215,11 +254,21 @@ async def _handle_message(phone_number_id: str, m: dict, profile_name: str | Non
         org = channel.organization_id
         await set_actor(session, "contact")
 
-        contact, is_new = await get_or_create_contact(session, org, m["from"], profile_name)
+        contact, is_new = await get_or_create_contact(session, org, sender.get("phone"), sender.get("name"),
+                                                      bsuid=sender.get("bsuid"), username=sender.get("username"),
+                                                      parent_bsuid=sender.get("parent_bsuid"))
         if contact.blocked:
             await session.commit()
             return  # cliente bloqueado: se ignora
         contact.last_seen_at = utcnow()
+        channel.last_inbound_at = utcnow()
+        try:  # respuesta al mensaje de prueba del asistente de onboarding (valida que los webhooks llegan)
+            from app.onboarding.hooks import on_whatsapp_inbound
+
+            if contact.wa_id:
+                await on_whatsapp_inbound(session, channel, contact.wa_id)
+        except Exception:
+            log.debug("Gancho de onboarding falló", exc_info=True)
 
         conv = await get_or_create_conversation(session, channel, contact)
         ref = m.get("referral")
@@ -250,6 +299,11 @@ async def _handle_message(phone_number_id: str, m: dict, profile_name: str | Non
                 msg.error = f"No se pudo descargar el archivo: {e}"[:2000]
 
         await record_message(session, conv, msg)
+        if raw_type == "order":  # pedido del catálogo: productos comprados (Cliente 360)
+            from app.interaction_products import record_order
+
+            await record_order(session, conv, m.get("order") or {}, msg.id)
+            await session.commit()
         status, conv_id, handled = await after_inbound(session, conv, msg, m, is_new)
 
     try:
@@ -270,6 +324,17 @@ async def after_inbound(session, conv: Conversation, msg: Message, raw: dict, is
     from app.flows.engine import handle_inbound as flows_inbound
 
     link = await attribute(session, conv, msg, raw, provider)
+    from app.golden.hooks import on_inbound_media  # registro maestro: lee cédulas, tarjetas de propiedad, SOAT…
+
+    await on_inbound_media(session, conv, msg)
+    try:  # agente avanzado: reinicia la recuperación, reactivación por tipificación y reglas por fuente (§17)
+        from app.agent_config import on_inbound as agent_config_inbound
+
+        await agent_config_inbound(session, conv, msg)
+    except Exception:  # noqa: BLE001 — nunca debe impedir que el mensaje se procese
+        log.exception("Configuración avanzada del agente falló en la conversación %s", conv.id)
+        await session.rollback()
+        await session.refresh(conv)
     # Orden: flujos (espera de respuesta, flujo del mensaje disparador, palabras clave) → automatizaciones → IA
     handled = await flows_inbound(session, conv, msg, link) or await on_inbound(session, conv, msg, is_new)
     await maybe_periodic(session, conv)
@@ -383,8 +448,12 @@ async def _handle_meta_event(provider: str, entry_id: str, ev: dict) -> None:
                 log.exception("No se pudo descargar el adjunto de %s", provider)
                 msg.error = f"No se pudo descargar el archivo: {e}"[:2000]
         await record_message(session, conv, msg)
-        raw = {"referral": {"source_type": "ad", "source_id": str(ad_id),
-                            "source_url": conv.ad_source_url}} if ad_id else {}
+        ctx = (referral or {}).get("ads_context_data") or {}
+        raw = {"referral": {"source_type": "ad", "source_id": str(ad_id), "source_url": conv.ad_source_url,
+                            "headline": ctx.get("ad_title"), "image_url": ctx.get("photo_url"),
+                            "video_url": ctx.get("video_url"),
+                            "media_type": "video" if ctx.get("video_url") else ("image" if ctx.get("photo_url") else None)}
+               } if ad_id else {}
         status, conv_id, handled = await after_inbound(session, conv, msg, raw, is_new, provider)
         client.last_inbound_at = now
     await client.mark_read()

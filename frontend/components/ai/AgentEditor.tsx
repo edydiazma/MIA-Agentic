@@ -5,6 +5,8 @@ import { api, send, type Channel } from "@/lib/api";
 import type { AIAgent, AIAgentIn, Cortex } from "@/lib/ai-types";
 import { Card, ErrorBox, Field, Toggle, useAction, useApi } from "@/components/ui";
 import JsonEditWithAI from "./JsonEditWithAI";
+import AgentAdvancedConfig from "@/components/agent-config/AgentAdvancedConfig";
+import { ADVANCED_DEFAULTS } from "@/lib/agent-config-types";
 
 type Doc = { id: number; title: string; chars?: number; enabled: boolean; source_filename?: string | null };
 
@@ -28,6 +30,7 @@ export const EMPTY_AGENT: AIAgentIn = {
   use_customer_memory: true,
   use_catalog: true,
   use_appointments: true,
+  ...ADVANCED_DEFAULTS,
 };
 
 /** Normaliza la respuesta de /api/bots/{id}/knowledge (lista de ids o de documentos). */
@@ -48,7 +51,7 @@ export default function AgentEditor({
   onSaved: (a: AIAgent) => void;
 }) {
   const blank = () => ({ ...EMPTY_AGENT, ...(template ?? {}) });
-  const [form, setForm] = useState<AIAgentIn>(agent ? { ...agent } : blank());
+  const [form, setForm] = useState<AIAgentIn>(agent ? { ...ADVANCED_DEFAULTS, ...agent } : blank());
   const [links, setLinks] = useState<number[]>([]);
   const [channels, setChannels] = useState<number[]>(agent?.channel_ids ?? []);
   const [aiEdit, setAiEdit] = useState(false);
@@ -60,7 +63,7 @@ export default function AgentEditor({
   const upload = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    setForm(agent ? { ...agent } : blank());
+    setForm(agent ? { ...ADVANCED_DEFAULTS, ...agent } : blank());
     setChannels(agent?.channel_ids ?? []);
     setSaved(null);
     if (agent) api<unknown>(`/api/bots/${agent.id}/knowledge`).then((d) => setLinks(docIds(d))).catch(() => setLinks([]));
@@ -141,6 +144,8 @@ export default function AgentEditor({
           </Field>
         </div>
       </Card>
+
+      <AgentAdvancedConfig form={form} set={set} disabled={disabled} isAdmin={isAdmin} />
 
       <Card title="Recursos conectados">
         <div className="grid2">

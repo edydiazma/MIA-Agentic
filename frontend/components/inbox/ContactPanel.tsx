@@ -24,6 +24,11 @@ import AIAnalysis from "./AIAnalysis";
 import DealsSection from "@/components/crm/DealsSection";
 import ConversationQuality from "@/components/quality/ConversationQuality";
 import ConversationOrigin from "@/components/attribution/ConversationOrigin";
+import ContactInsights, { WhatsAppIdentity } from "@/components/clients/ContactInsights";
+import InteractionProducts from "@/components/products/InteractionProducts";
+import type { ContactRow } from "@/lib/customer-types";
+import { SourceLine, type SourceFields } from "@/components/ads/SourceLine";
+import { MasterDataModal } from "@/components/golden/MasterData";
 
 function in60Days() {
   const d = new Date();
@@ -41,6 +46,7 @@ export default function ContactPanel({
   onConversation: (c: Conversation) => void;
 }) {
   const [showHistory, setShowHistory] = useState(false);
+  const [showMaster, setShowMaster] = useState(false);
   const [historyKey, setHistoryKey] = useState(0);
   const contact = conversation.contact;
   const [form, setForm] = useState({ name: "", email: "", stage: "lead" as Stage, tags: "", notes: "" });
@@ -136,11 +142,18 @@ export default function ContactPanel({
             // eslint-disable-next-line @next/next/no-img-element
             <img src={contact.avatar_url} alt="" width={28} height={28} style={{ borderRadius: "50%" }} />
           )}
-          {contact.wa_id && <span className="muted small">+{contact.wa_id}</span>}
           {contact.marketing_opt_out && <Badge tone="warn">Sin marketing</Badge>}
           {contact.blocked && <Badge tone="bad">Bloqueado</Badge>}
         </div>
+        <WhatsAppIdentity contact={contact as ContactRow} />
         <Identities contactId={contact.id} />
+        <SourceLine contact={contact as unknown as SourceFields} />
+        <button className="link small" style={{ marginBottom: 8 }} onClick={() => setShowMaster(true)}>
+          Ver datos maestros
+        </button>
+        {showMaster && (
+          <MasterDataModal contactId={contact.id} title={contact.name ?? undefined} onClose={() => setShowMaster(false)} />
+        )}
         <div className="stack" style={{ gap: 8 }}>
           <input placeholder="Nombre" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           <input placeholder="Email" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
@@ -188,6 +201,9 @@ export default function ContactPanel({
       </div>
 
       <ConversationOrigin key={conversation.id} conversationId={conversation.id} adHeadline={conversation.ad_headline} />
+
+      <ContactInsights key={`insights-${contact.id}`} contact={contact} />
+      <InteractionProducts key={`products-${conversation.id}`} conversationId={conversation.id} />
 
       <DealsSection key={contact.id} contact={contact} conversationId={conversation.id} />
       <ConversationQuality conversationId={conversation.id} closed={conversation.status === "closed"} />

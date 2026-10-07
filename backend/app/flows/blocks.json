@@ -656,6 +656,100 @@
    ]
   },
   {
+   "type": "register_product",
+   "category": "crm",
+   "label": "Registrar producto de interés",
+   "icon": "🧾",
+   "junior": true,
+   "shape": "stack",
+   "inputs": [
+    {
+     "name": "product",
+     "label": "Producto (SKU o nombre)",
+     "type": "text",
+     "required": true
+    },
+    {
+     "name": "stage",
+     "label": "Etapa",
+     "type": "select",
+     "required": true,
+     "options": [
+      {
+       "value": "mentioned",
+       "label": "Mencionado"
+      },
+      {
+       "value": "interested",
+       "label": "Interesado"
+      },
+      {
+       "value": "quoted",
+       "label": "Cotizado"
+      },
+      {
+       "value": "purchased",
+       "label": "Comprado"
+      },
+      {
+       "value": "not_interested",
+       "label": "No le interesa"
+      }
+     ]
+    },
+    {
+     "name": "external_ref",
+     "label": "Código en tu sistema (opcional)",
+     "type": "text",
+     "required": false
+    }
+   ]
+  },
+  {
+   "type": "record_consent",
+   "category": "crm",
+   "label": "Registrar consentimiento",
+   "icon": "✅",
+   "junior": true,
+   "shape": "stack",
+   "inputs": [
+    {
+     "name": "consent_type",
+     "label": "Tipo",
+     "type": "select",
+     "required": true,
+     "options": [
+      {
+       "value": "habeas_data",
+       "label": "Habeas data (tratamiento de datos)"
+      },
+      {
+       "value": "terms",
+       "label": "Términos y condiciones"
+      },
+      {
+       "value": "marketing",
+       "label": "Comunicaciones de marketing"
+      },
+      {
+       "value": "data_sharing",
+       "label": "Compartir datos con terceros"
+      },
+      {
+       "value": "call_recording",
+       "label": "Grabación de llamadas"
+      }
+     ]
+    },
+    {
+     "name": "policy_version",
+     "label": "Versión de la política (opcional)",
+     "type": "text",
+     "required": false
+    }
+   ]
+  },
+  {
    "type": "set_stage",
    "category": "crm",
    "label": "Cambiar etapa",

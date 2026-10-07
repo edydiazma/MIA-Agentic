@@ -6,6 +6,8 @@ import { send, timeAgo, fmtNum, type Integration } from "@/lib/api";
 import { useRealtime } from "@/lib/realtime";
 import { useMe } from "@/components/Shell";
 import { Badge, Card, Empty, ErrorBox, Loading, PageHeader, Stat, useAction, useApi } from "@/components/ui";
+import OnboardingBanner from "@/components/onboarding/OnboardingBanner";
+import ChannelHealthCard from "@/components/onboarding/ChannelHealthCard";
 
 type CCAlert = {
   id: number;
@@ -132,6 +134,7 @@ export default function HomePage() {
         }
         actions={<button onClick={() => cc.reload()} disabled={cc.loading}>Actualizar</button>}
       />
+      {me?.role === "admin" && <OnboardingBanner />}
 
       <div className="stats">
         <StatusCard
@@ -315,6 +318,8 @@ export default function HomePage() {
           </div>
         )}
       </Card>
+
+      <ChannelHealthCard />
 
       <Card title="Integraciones" actions={<span className="muted small">{connected} conectadas</span>}>
         {integrations.error && <ErrorBox error={integrations.error} />}

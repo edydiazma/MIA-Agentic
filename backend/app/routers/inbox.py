@@ -8,6 +8,7 @@ from app import storage, templates
 from app.auth import current_agent
 from app.campaigns import send_template_message
 from app.db import get_session, set_actor
+from app.identity import wa_address
 from app.models import Agent, Channel, Contact, ContactIdentity, Conversation, ConversationTag, Group, Message, Resource, Tag
 from app.schemas import SendText
 from app.service import (
@@ -39,6 +40,8 @@ class TransferIn(BaseModel):
 
 class CloseIn(BaseModel):
     typification: str | None = None
+    # Datos que exige la tipificación (deal.amount, deal.currency, field:<clave>…), §17
+    values: dict[str, str | float | int | None] | None = None
 
 
 class TemplateIn(BaseModel):
@@ -166,7 +169,7 @@ async def _send_file(session: AsyncSession, conv: Conversation, agent: Agent, da
         client = await wa_client(session, conv.channel, conv)
         client.human = True
         media_id = await client.upload_media(data, mime, filename)
-        msg.wa_message_id = await client.send_media(conv.contact.wa_id, kind, media_id, caption, filename)
+        msg.wa_message_id = await client.send_media(wa_address(conv.contact), kind, media_id, caption, filename)
         msg.status = "sent"
     except Exception as e:
         msg.status, msg.error = "failed", str(e)[:2000]
@@ -279,6 +282,13 @@ async def close_conversation(conv_id: int, body: CloseIn | None = None, agent: A
         raise HTTPException(422, "Tipificación inválida")
     if cfg["require_typification"] and not typ:
         raise HTTPException(422, "Selecciona una tipificación para cerrar la conversación")
+    if typ is not None and typ.required_fields:
+        from app.agent_config import missing_required
+
+        missing = await missing_required(session, conv, typ, body.values if body else None)
+        if missing:
+            raise HTTPException(422, {"message": f"La tipificación «{typ.name}» exige: {', '.join(missing)}",
+                                      "missing": missing})
     await close_conv(session, conv, typ, actor="agent", agent_id=agent.id)
     return conversation_out(conv)
 

@@ -27,19 +27,33 @@ from app.models import (
 from app.realtime import hub
 from app.schemas import AgentOut, ContactOut, ConversationOut, GroupOut, MessageOut
 from app.settings_store import get_setting
-from app.channels import LABELS, WHATSAPP, channel_client, window_for
+from app.channels import LABELS, channel_client, window_for
+from app.identity import wa_address
 from app.models import ContactIdentity
 
 SESSION_WINDOW = timedelta(hours=24)
 
 
 # --- Serialización (contrato estable de la API) ---------------------------------
+def _days(delta) -> float | None:
+    return round(delta.total_seconds() / 86400, 2) if delta is not None else None
+
+
 def contact_out(c: Contact) -> dict:
+    first, last = as_utc(c.first_interaction_at), as_utc(c.last_interaction_at)
     return ContactOut(
         id=c.id, wa_id=c.wa_id, avatar_url=c.avatar_url, name=c.name, email=c.email, notes=c.notes, stage=c.stage,
         tags=sorted(link.tag.name for link in c.tag_links), custom_fields=custom_values(c), memory=c.memory,
         memory_updated_at=c.memory_updated_at, blocked=c.blocked, blocked_reason=c.blocked_reason,
         blocked_at=c.blocked_at, marketing_opt_out=c.marketing_opt_out, created_at=c.created_at,
+        wa_username=c.wa_username, wa_bsuid=c.wa_bsuid, channel_providers=list(c.channel_providers or []),
+        updated_at=c.updated_at, first_interaction_at=first, first_inbound_at=c.first_inbound_at,
+        last_interaction_at=last, last_inbound_at=c.last_inbound_at, last_outbound_at=c.last_outbound_at,
+        messages_in=c.messages_in or 0, messages_out=c.messages_out or 0,
+        conversations_count=c.conversations_count or 0, flow_runs_count=c.flow_runs_count or 0,
+        last_flow_at=c.last_flow_at, products_count=c.products_count or 0, last_product_name=c.last_product_name,
+        lifetime_days=_days(last - first) if first and last else None,
+        days_since_last_interaction=_days(datetime.now(UTC) - last) if last else None,
     ).model_dump(mode="json")
 
 
@@ -145,24 +159,14 @@ async def commit_and_broadcast(session: AsyncSession, conv: Conversation, event:
 
 
 # --- Contactos y conversaciones -------------------------------------------------
-async def get_or_create_contact(session: AsyncSession, org: int, wa_id: str,
-                                profile_name: str | None = None) -> tuple[Contact, bool]:
-    contact = await session.scalar(select(Contact).where(Contact.organization_id == org, Contact.wa_id == wa_id))
-    created = contact is None
-    if contact:
-        if profile_name and not contact.name:
-            contact.name = profile_name
-    else:
-        contact = Contact(organization_id=org, wa_id=wa_id, name=profile_name)
-        session.add(contact)
-        await session.flush()
-        await session.refresh(contact, ["field_values", "tag_links"])
-    ident = await session.scalar(select(ContactIdentity).where(
-        ContactIdentity.organization_id == org, ContactIdentity.provider == WHATSAPP,
-        ContactIdentity.external_id == wa_id))
-    if ident is None:
-        session.add(ContactIdentity(organization_id=org, contact_id=contact.id, provider=WHATSAPP, external_id=wa_id))
-    return contact, created
+async def get_or_create_contact(session: AsyncSession, org: int, wa_id: str | None,
+                                profile_name: str | None = None, bsuid: str | None = None,
+                                username: str | None = None, parent_bsuid: str | None = None) -> tuple[Contact, bool]:
+    """Contacto de WhatsApp por BSUID (user_id) y/o teléfono; ver app/identity.py."""
+    from app.identity import resolve_whatsapp_contact
+
+    return await resolve_whatsapp_contact(session, org, phone=wa_id, bsuid=bsuid, parent_bsuid=parent_bsuid,
+                                          username=username, name=profile_name)
 
 
 async def get_or_create_contact_by_identity(session: AsyncSession, channel: Channel, external_id: str,
@@ -237,7 +241,7 @@ async def send_text(session: AsyncSession, conv: Conversation, text: str, sender
     try:
         client = await wa_client(session, conv.channel, conv)
         client.human = sender_type == "agent"  # Messenger/Instagram: HUMAN_AGENT fuera de las 24 h
-        ids = await client.send_text(conv.contact.wa_id, text)
+        ids = await client.send_text(wa_address(conv.contact), text)
         msg.wa_message_id, msg.status = ids[0], "sent"
     except Exception as e:
         msg.status, msg.error = "failed", str(e)[:2000]
@@ -352,6 +356,7 @@ async def close(session: AsyncSession, conv: Conversation, typification: Typific
 
         await on_event(conv.id, "close")
     __import__("app.quality.hooks", fromlist=["on_close"]).on_close(conv.id)  # QA automático (nunca lanza)
+    __import__("app.golden.hooks", fromlist=["on_close"]).on_close(conv.id)  # llaves del cliente (nunca lanza)
 
 
 # --- Alertas --------------------------------------------------------------------

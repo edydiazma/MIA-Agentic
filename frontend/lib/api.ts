@@ -434,8 +434,8 @@ export function timeAgo(iso: string | null | undefined): string {
 
 /** Teléfono para mostrar; los contactos de Instagram/Messenger/chat web no tienen. */
 export const phoneLabel = (waId: string | null | undefined) => (waId ? `+${waId}` : "Sin WhatsApp");
-export const contactLabel = (c: { name: string | null; wa_id: string | null }) =>
-  c.name || (c.wa_id ? `+${c.wa_id}` : "Sin nombre");
+export const contactLabel = (c: { name: string | null; wa_id: string | null; wa_username?: string | null }) =>
+  c.name || (c.wa_id ? `+${c.wa_id}` : c.wa_username ? `@${c.wa_username}` : "Sin nombre");
 
 export const STAGE_LABEL: Record<Stage, string> = {
   lead: "Lead",

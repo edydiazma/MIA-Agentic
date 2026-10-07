@@ -12,6 +12,7 @@ export const CONFIG_TABS = [
   { href: "/configuraciones/magia", label: "Magia de IA" },
   { href: "/configuraciones/clasificacion", label: "Clasificación IA" },
   { href: "/configuraciones/campos", label: "Campos de cliente" },
+  { href: "/configuraciones/datos-maestros", label: "Campos y datos maestros" },
   { href: "/configuraciones/usuarios", label: "Gestión usuarios" },
   { href: "/configuraciones/reportes", label: "Reportes" },
   { href: "/configuraciones/empresa", label: "Mi empresa" },

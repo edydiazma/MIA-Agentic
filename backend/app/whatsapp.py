@@ -54,8 +54,21 @@ class WhatsAppClient:
                                 "Plataforma («Conectar WhatsApp») o define WA_ACCESS_TOKEN en el servidor.")
         return {"Authorization": f"Bearer {self.token}"}
 
+    @staticmethod
+    def address(payload: dict) -> dict:
+        """El cliente se identifica por teléfono (`to`) o, si no lo tenemos, por su BSUID (`recipient`)."""
+        from app.identity import is_bsuid
+
+        to = payload.get("to")
+        if not to:
+            raise WhatsAppError("El contacto no tiene teléfono ni usuario de WhatsApp (BSUID) para enviarle mensajes")
+        if is_bsuid(to):
+            payload = {k: v for k, v in payload.items() if k != "to"}
+            payload.update({"recipient_type": "individual", "recipient": to})
+        return payload
+
     async def _post_message(self, payload: dict) -> str:
-        payload = {"messaging_product": "whatsapp", **payload}
+        payload = {"messaging_product": "whatsapp", **self.address(payload)}
         async with httpx.AsyncClient(timeout=30) as http:
             r = await http.post(f"{self.base}/{self.phone_number_id}/messages", json=payload, headers=self._headers)
         if r.status_code >= 400:

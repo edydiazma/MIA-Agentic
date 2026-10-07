@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     meta_capi_token: str = ""  # token de sistema con ads_management/business_management (CAPI)
     meta_embedded_signup_config_id: str = ""
 
+    # Correo (invitaciones de usuarios). Sin SMTP_HOST el panel muestra el enlace para copiarlo.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""  # "WA Agent <no-reply@tuempresa.com>"
+    smtp_starttls: bool = True
+
     # CRM
     hubspot_client_id: str = ""
     hubspot_client_secret: str = ""

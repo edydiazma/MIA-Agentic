@@ -1,3 +1,4 @@
+import type { AgentAdvanced } from "./agent-config-types";
 /**
  * Tipos de los módulos de IA (Cortex, agentes, memoria, mejor vendedor, catálogo, edición JSON con IA).
  * Espejo de backend/app/routers/{cortex,bots,memory,seller,catalog,json_edit}.py — si el backend cambia,
@@ -50,7 +51,7 @@ export type AIConnectionIn = Omit<AIConnection, "id" | "has_api_key" | "health">
 };
 
 export type CortexStrategy = "failover" | "lowest_latency" | "weighted";
-export type CortexPurpose = "chat" | "classification" | "learning" | "flow" | "json_edit" | "qa" | "agent_test" | "any";
+export type CortexPurpose = "chat" | "classification" | "learning" | "flow" | "json_edit" | "qa" | "agent_test" | "onboarding" | "any";
 export type CortexMember = {
   connection_id: number;
   position: number;
@@ -115,7 +116,7 @@ export type AIAgent = {
   use_catalog: boolean;
   use_appointments: boolean;
   channel_ids: number[];
-};
+} & AgentAdvanced;
 export type AIAgentIn = Omit<AIAgent, "id" | "channel_ids">;
 
 export type MemoryKind = "faq" | "objection" | "winning_response" | "fact" | "policy" | "insight";

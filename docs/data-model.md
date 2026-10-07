@@ -347,6 +347,165 @@ erDiagram
 - Migration 20b (`20261011000700_api_sources`): origin `api` for `conversation_events.actor_type`, `deals.source`
   and `contact_tags.source` (`contact_changes`/`contact_field_values` already accepted it). Guide: `docs/api.md`.
 
+## 13. Onboarding wizard and automatic setup (migration 21)
+
+Goal: a new company goes from sign-up to a live, validated WhatsApp number with approved templates, an AI agent,
+team and settings, without touching Meta's console or the panel's settings pages.
+
+| Step (`onboarding_steps.key`) | What the system does automatically |
+|---|---|
+| `company` | Company profile, industry, country/time zone, business hours. **Import from website**: fetch the site, extract profile, FAQs and products with the LLM (answers → `onboarding_runs.answers`, knowledge, catalog draft) |
+| `whatsapp` | Meta **Embedded Signup** (incl. coexistence with the WhatsApp Business app): token exchange, subscribe app to the WABA, register the number with a 2-step PIN, store token in Vault, create the channel |
+| `validate` | Health checks into `channel_health_checks` (last result per check, `fixable` → "Arreglar"): `token_valid`, `registered`, `pin`, `webhook` (app subscribed), `name_approved`, `quality`, `limit_tier`, `profile`, `templates_ready`, `outbound_test`, `inbound_roundtrip`. Channel Meta state cached on `channels` |
+| `profile` | WhatsApp business profile (about, description, address, email, websites, vertical, photo) from the company answers |
+| `templates` | Industry template pack (welcome, follow-up, appointment reminder, quote follow-up, reactivation, service update…) localized and personalized; submitted to Meta (`wa_templates.source = onboarding`, `pack_key`, `template_key`); status tracked through the `message_template_status_update` webhook; rejected → reason + AI rewrite + resubmit |
+| `ai` | AI agent prompt from the company profile/tone, knowledge from the website import, typifications and groups by industry, business-hours message, classifier defaults |
+| `team` | Invite users by email (`agent_invitations`, one-time token link, role, groups); copyable link when e-mail isn't configured |
+| `test` | Send a test message to the admin's phone and wait for the reply (`inbound_roundtrip`) |
+| `go_live` | All required checks pass → `organizations.onboarding_completed_at`, bot on, flows active; summary |
+
+- `onboarding_runs`: one `in_progress` run per organization, `current_step`, `industry`, `answers`, connected
+  `channel_id`. `onboarding_steps`: per-step status, attempts, `result` (what was created) and `error`; every
+  step is idempotent and can be re-run.
+- `channel_health_checks` keep running after onboarding (worker loop) and feed Centro de Control.
+- `organizations.industry`, `onboarding_completed_at` (existing companies were marked completed).
+- `agent_invitations`: pending invitation unique per (organization, email); only the token hash is stored.
+- Migration 21b (`20261012000200_onboarding_purpose.sql`): AI purpose `onboarding` (website import, rewriting rejected templates) in `ai_calls` / `cortexes`.
+- `wa_templates` sync from Meta is an upsert, so `source`, `pack_key`, `template_key` and `rejected_reason` survive refreshes; templates deleted in Meta are removed.
+
+## 14. Customer 360: WhatsApp username/BSUID, interaction BI, products (migration 22)
+
+- **WhatsApp identity without a phone.** Since 2026 every WhatsApp webhook carries `contacts[].user_id` (BSUID,
+  `CC.<id>`, scoped to the business portfolio; parent BSUID `CC.ENT.<id>` across linked portfolios) and, when the
+  customer adopted a username, `contacts[].profile.username`; `wa_id`/`from` (phone) only arrive if there was an
+  interaction with that business number in the last 30 days or the user is in the contact book. Messages carry
+  `from_user_id`; statuses `recipient_user_id`; `user_id_update` changes the BSUID. Sending to a BSUID uses
+  `recipient` instead of `to` (phone wins if both). Authentication one-tap/zero-tap/copy-code templates need the phone.
+  - `contacts.wa_bsuid` (unique per org), `wa_parent_bsuid`, `wa_username`; `contacts.wa_id` stays the phone.
+  - `contact_identities` (WhatsApp) gets `phone`, `bsuid`, `parent_bsuid` (unique per org); lookup order:
+    BSUID → phone; when both arrive they are linked on the same contact. BSUID/username changes go to
+    `contact_changes` (source `whatsapp`).
+- **Interaction metrics on the contact** (maintained by triggers, O(1) per message, system notes excluded):
+  `first_interaction_at`, `first_inbound_at`, `last_interaction_at`, `last_inbound_at`, `last_outbound_at`,
+  `messages_in/out`, `conversations_count`, `first/last_channel_id`, `last_conversation_id`, `last_agent_id`,
+  `last_typification_id` (+`last_typified_at`), `flow_runs_count`, `last_flow_id/at`, `channel_providers`,
+  `products_count`, `last_product_name`. Backfilled from existing data. These feed the client list columns
+  (Nombre completo, Teléfono, Usuario WhatsApp, Etiquetas, Canales, Agente, Tipificación, F. creación,
+  F. actualización, primera/última interacción, días, productos, flujos) with indexes for sorting/filtering.
+- **BI views:** `reporting.v_contact_bi` (lifetime days = last − first interaction, days since last interaction /
+  inbound, days to first interaction, average days between conversations) and `reporting.v_conversation_bi`
+  (first response, duration, handling time, products, flow runs per conversation).
+- **`interaction_products`**: product mentioned / interested / quoted / purchased / not interested in a conversation,
+  linked to the catalog (`product_id`) **or** to any external system (`external_ref`: SKU/ERP/CRM code) with a name
+  snapshot, quantity, price, source (`ai | agent | flow | api | whatsapp_order | catalog_message | import`) and AI
+  confidence; deduplicated per conversation + product + stage (migration 22b: deleting a row decrements
+  `contacts.products_count`). `reporting.daily_products`: demand per product,
+  stage, value and distinct contacts.
+
+## 15. Golden record: customer identification keys (migration 23)
+
+Every piece of data that identifies or describes a customer is captured as a **key** with evidence, instead of
+loose columns. Keys fill in as the chat receives conversations and documents (ID card, driver's license, vehicle
+registration, SOAT, invoice, RUT) and are aggregated into a **golden record** per customer. The golden record is
+**not** shown on the client summary card; it lives in "Datos maestros", BI, CRM sync and opportunity generation.
+
+- `golden_key_types`: catalog (system rows with `organization_id` null + company-specific keys such as policy or
+  contract number): `normalizer` (`phone | email | username | document | plate | vin | name | date | address |
+  text`), `is_identifier` (finds duplicates), `is_sensitive` (masked for advisors), `multi`, `ai_extract`,
+  `ai_hint`. System keys: phone, email, username (with network), document (with type CC/CE/NIT/PAS/…), first name,
+  last name, birthdate, address (with type), plate, VIN, company, occupation.
+- `contact_keys`: one row per captured value: raw `value` + `value_normalized` (E.164, lowercase email, plate
+  without separators, validated 17-char VIN, document digits, ISO date), `subtype`, structured `data`, `rank`
+  (one **primary** per customer/type/subtype; others secondary), `status` (`active | superseded | rejected`),
+  `verified`, `confidence`, `source` (`whatsapp | channel | ai_conversation | ai_document | agent | import | api |
+  crm | flow | form`), evidence (`conversation_id`, `message_id`, `extraction_id`, snippet), `seen_count`,
+  first/last seen. Channel data enters automatically (trigger): the WhatsApp phone and username as **verified**,
+  the e-mail typed on the card.
+- `contact_golden`: aggregated record maintained by trigger (primary values first, then verified, confidence,
+  recency): names, primary/all phones and e-mails, usernames per network, document type/number, birthdate,
+  addresses, plates, VINs, company keys in `extra`, `completeness_pct` (7 base keys), `keys_count`; GIN indexes to
+  find a customer by plate, VIN, e-mail, phone or document.
+- `contact_vehicles`: plate + VIN + make/model/version/year/color/fuel/mileage, relation (owner, driver, interested,
+  previous owner), due dates (insurance/SOAT, inspection, warranty, next service) → opportunities;
+  `deals.vehicle_id` and `deals.origin` (e.g. `soat_due`, `inspection_due`, `trade_in`).
+- `key_extractions`: audit of every AI extraction (conversation, document, image, audio): detected document type,
+  structured output, keys added/updated, `ai_call_id`; a document message is processed once.
+- `contact_merge_candidates`: two customers sharing an identifier key, with matched keys and a score (document and
+  e-mail weigh more than plate/VIN, which can change owner); pending → merged / dismissed.
+- `reporting.v_golden_coverage`: average completeness and coverage per key type.
+- Migration 23b (`20261012000800_golden_purpose.sql`): AI purpose `golden` on `ai_calls` / `cortexes` (document
+  reading, extraction on close and the field-consolidation assistant can have their own Cortex). Settings key
+  `golden`: `extract_documents`, `extract_conversations`, `min_confidence` (0.6), `agents_see_sensitive`,
+  `auto_opportunities`, `opportunity_days` (30), `followup_on_opportunity`. Field types `currency` and `datetime`.
+- **Field organization** (replaces cards with ~150 loose, duplicated fields — e.g. the plate kept as `Placa`,
+  `Numero_placa`, `Placas_vehiculo`, `C_taller_placa`, `K_taller_placa`):
+  `contact_fields.section` (Identidad, Vehículo, Nuevos, Usados, Taller, Repuestos/Accesorios, PQR,
+  Consentimientos, Marketing, Técnico), `scope` (`contact | deal | vehicle | appointment | flow` — bot scratch
+  variables such as `Saludo inicial` or `Var_ruta_conversion` belong to the flow run, not to the customer),
+  `pipeline` (business line when scope = deal), `maps_to` (golden key type or attribute such as
+  `vehicle.mileage_km`, `consent.habeas_data`, `deal.amount`), `aliases` (old names from Atom, bots, CRM, imports —
+  all resolve to one canonical field), `show_in_card` (only flagged fields appear on the summary card), new types
+  `currency` and `datetime`.
+- `deals.attributes` (qualification per business line: model of interest, transmission, payment method, purchase
+  timeframe, budget, test drive…) and `deals.interest_level` (`hot | warm | cold`); `contact_vehicles.attributes`.
+- `contact_consents`: habeas data, terms, marketing, data sharing, call recording — granted/denied with policy
+  version, channel, conversation, message evidence and source; revocable. `reporting.v_contact_consents` = current
+  state per type (Ley 1581 de 2012).
+
+## 16. Ad-level tracking: creative, post, customer source, spend (migration 24)
+
+- The Click to WhatsApp / Messenger / Instagram referral carries `source_type` (`ad | post`), `source_id`,
+  `source_url` (e.g. `https://www.facebook.com/story.php?story_fbid=1060896133661462&id=100092232559076`), headline,
+  body, media type, image/video/thumbnail URLs and `ctwa_clid`. `attributions` and `attribution_touches` keep the
+  creative snapshot plus `page_id` and `post_id` (`{page_id}_{post_id}`, parsed from the URL or the source id).
+- An ad built on a post has `creative.effective_object_story_id = {page_id}_{post_id}`: `ad_entities` (now with
+  status, story id, headline, body, media, destination, account) lets enrichment resolve a **post** visit to the
+  **specific ad** that promoted it.
+- **Customer source:** `contacts.first_source_*` and `last_source_*` (channel, ad id, campaign, display label such as
+  "Meta · Lanzamiento Isuzu · Isuzu Estacas - Video", timestamp, attribution id), maintained by a trigger on
+  `attributions` (enrichment re-labels the same attribution; "direct" never replaces a real source; the first source follows its attribution row only while `touches = 1`; a return through another ad inside the same conversation only moves the last source, migration 24b). List columns
+  "Fuente (primer toque)" / "Última fuente" and filters by ad or campaign.
+- `ad_spend_daily`: spend, impressions, clicks (and Meta's conversations started) per ad / ad group / campaign and
+  day, from Meta Insights and Google Ads.
+- `reporting.daily_ads`: per ad (or post, campaign, UTM, channel) and day — attributed conversations, new customers
+  (first touch), sales, conversions and value, spend, impressions, clicks → cost per conversation, cost per new
+  customer, cost per sale, ROAS in the API.
+
+## 17. Advanced AI agent configuration, stages, recovery, security, inbound webhooks (migration 25)
+
+Mirrors (and extends) the per-agent "Configuración global" customers know from Atom: general instructions, ad
+recognition, WhatsApp cost optimization, stages, tags, typifications, fields to identify, inactivity recovery,
+security rules and time zone.
+
+- `ai_agents`: `timezone`, `max_words`; **ad recognition** `ad_context_enabled` + `ad_context_prompt` (the first
+  reply is personalized with the ad / post / trigger link / portal the customer came from, §16); **source rules**
+  `source_rules` (JSON Schema-validated: match by channel, source type, ad, campaign, link, portal such as
+  MercadoLibre / TuCarro or text → route to a group, tags, set a stage, skip the "what's your request" question,
+  handoff); `cost_optimization` (merge consecutive bot messages, no templates inside the customer-service window,
+  recovery only inside the free window, use the 72 h Click to WhatsApp free entry window); **security**
+  `security_enabled`, `security_prompt`, `security_action` (`close | block | handoff | flag`); **inactivity
+  recovery** `recovery_enabled`, `recovery_attempts` (≤ 3: `after_hours` ≤ 12, message or guidance, `use_ai` to
+  write it from the conversation context), `inactivity_end_hours`, `inactivity_end_typification_id`;
+  `extract_field_ids` (fields this agent captures; empty = all `ai_extract` fields).
+- `conversations.recovery_attempts_sent`, `last_recovery_at`, `security_flag`; new event types `recovery_sent`,
+  `inactivity_closed`, `security_flagged`, `stage_changed`, `source_rule_applied`, `webhook_triggered`.
+- **Stages per business line** `pipeline_stages` (pipeline, key, name, `external_name` for the CRM/Atom name,
+  `ai_condition`, position, probability, won/lost) — e.g. nuevos: Lead → MQL → SQL; `deal_stage_events` history
+  (source ai/agent/flow/crm/api/rule/webhook, reason, confidence); `deals.stage_changed_at`. The agent moves stages
+  through a tool call when a condition is met (no extra LLM call).
+- **Richer typifications**: `section` (positive / negative / followup — Atom's "Seguim."), `keyword`, `group_ids`,
+  `reactivate_bot_after_h`, `required_fields` (e.g. amount, currency, invoice for sales).
+- Tags already carry their AI condition in `tags.ai_description`.
+- **Inbound webhooks** `inbound_webhooks` (Atom's "Webhooks": e.g. "Confirmación Cita V.5 · 11 parámetros"):
+  `/hooks/{slug}` with a hashed token; action (`send_template | send_text | start_flow | upsert_contact |
+  create_deal | create_appointment`), channel, template, flow, typed `params` with `maps_to` (recipient phone/BSUID,
+  template header/body/button variables, contact fields, golden keys, vehicle, deal, appointment or flow
+  variables), options (assignment, bot on/off, tags, typification, dedupe window), version, creator, publish date,
+  and counters (executions / succeeded / failed) maintained by trigger. `inbound_webhook_runs` (**partitioned**,
+  6 months): payload, result, contact, conversation, error, latency, IP, idempotency key.
+- Migration 25b (`20261012001100_appointments_sources.sql`): `appointments.created_by_type` also accepts `api` and
+  `webhook` (appointments created by inbound webhooks).
+
 ## 11. Feature log (data-model changes)
 
 | Date | Feature | Model change |
@@ -360,6 +519,11 @@ erDiagram
 | 2026-10-07 | Flow engine | No schema changes: uses `flows`, `flow_versions`, `flow_runs` (`context` = variables + resumable execution stack), `flow_run_steps`. Shared block catalog `blocks.json` |
 | 2026-10-08 | Phase 2 (model) | Attribution, CRM, voice and SaaS: migrations 11–14 (section 10) |
 | 2026-10-11 | Public API `/v1` + advisor PWA | Migration 20b: origin `api` (actor and sources) |
+| 2026-10-12 | Agent config, stages, recovery, security, inbound webhooks | Migration 25 (§17): `ai_agents` ad context / source rules / cost optimization / security / recovery / time zone / fields; `pipeline_stages`, `deal_stage_events`; richer `typifications`; `inbound_webhooks`, `inbound_webhook_runs` (partitioned) |
+| 2026-10-12 | Ad-level tracking | Migration 24 (§16): creative/post on `attributions` and touches; `ad_entities` creative + story id; `contacts.first_source_*`/`last_source_*` (trigger); `ad_spend_daily`; `reporting.daily_ads` |
+| 2026-10-12 | Golden record (identification keys) | Migration 23 (§15): `golden_key_types`, `contact_keys`, `contact_golden` (trigger), `contact_vehicles`, `key_extractions`, `contact_merge_candidates`; `deals.vehicle_id/origin/attributes/interest_level`; field organization on `contact_fields` (section, scope, pipeline, maps_to, aliases, show_in_card); `contact_consents`; `reporting.v_golden_coverage`, `v_contact_consents` |
+| 2026-10-12 | Customer 360 | Migration 22 (§14): WhatsApp BSUID/username on contacts and identities; interaction metrics on contacts (triggers + backfill); `interaction_products`; `reporting.v_contact_bi`, `v_conversation_bi`, `daily_products` |
+| 2026-10-12 | Onboarding wizard + auto setup | Migration 21 (§13): `onboarding_runs`, `onboarding_steps`, `channel_health_checks`, `agent_invitations`; Meta state on `channels`; `wa_templates` source/pack/rejection; `organizations.industry/onboarding_completed_at` |
 | 2026-10-11 | Phase 4 model: scale, omnichannel, AI quality, public API | Migrations 17–20 (§12): `worker_heartbeats`, `realtime_spill`, `rate_limit_counters`; `contact_identities`, `webchat_sessions`, channel providers, `contacts.wa_id` nullable; `qa_scorecards`, `conversation_reviews`, `coaching_items`, `agent_test_*`; `api_keys`, `api_requests` (partitioned), `api_idempotency`, `push_subscriptions`; rollups `daily_channels`, `daily_qa`, `daily_api` |
 | 2026-10-10 | Trigger messages + multi-touch attribution + ad/CRM alignment | Migration 16 (§10.5): `wa_links`, `attribution_touches` (partitioned), `ad_entities`, `reporting.daily_links`; `attributions` +link/enriched names/touches; `web_sessions.link_id`, `site_id` nullable; channel `offline` |
 | 2026-10-09 | Reportes → Análisis de flujos | Migration 15: `flow_run_steps.organization_id/flow_id` (+ index, RLS `org_read`), `reporting.daily_flows`, `daily_flow_blocks`, `daily_flow_choices`, `reporting.refresh_flows`; `refresh_range` now wraps `refresh_core` + `refresh_flows` |

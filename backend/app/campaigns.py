@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app import templates
 from app.db import SessionLocal, set_actor
+from app.identity import require_phone_for_template, wa_address
 from app.models import Campaign, CampaignRecipient, Channel, Message, utcnow
 from app.service import create_alert, get_or_create_conversation, record_message, wa_client
 
@@ -24,10 +25,11 @@ async def send_template_message(session, conv, tpl: dict, values: list[str], sen
     msg = Message(direction="out", sender_type=sender_type, sender_agent_id=agent_id, type="template",
                   text=rendered, template_name=tpl["name"], campaign_id=campaign_id)
     try:
-        if not conv.contact.wa_id:
-            raise ValueError("El contacto no tiene número de WhatsApp")
+        if not wa_address(conv.contact):
+            raise ValueError("El contacto no tiene número ni usuario de WhatsApp")
+        require_phone_for_template(conv.contact, tpl.get("category"))
         msg.wa_message_id = await (await wa_client(session, conv.channel)).send_template(
-            conv.contact.wa_id, tpl["name"], tpl["language"], components)
+            wa_address(conv.contact), tpl["name"], tpl["language"], components)
         msg.status = "sent"
     except Exception as e:
         msg.status, msg.error = "failed", str(e)[:2000]
@@ -67,8 +69,10 @@ async def run_campaign(campaign_id: int) -> None:
             contact = r.contact
             if contact.blocked:
                 r.status, r.error = "skipped", "Contacto bloqueado"
-            elif not contact.wa_id:
-                r.status, r.error = "skipped", "El contacto no tiene número de WhatsApp"
+            elif not wa_address(contact):
+                r.status, r.error = "skipped", "El contacto no tiene número ni usuario de WhatsApp"
+            elif tpl["category"] == "AUTHENTICATION" and not contact.wa_id:
+                r.status, r.error = "skipped", "Las plantillas de autenticación necesitan el teléfono del cliente"
             elif tpl["category"] == "MARKETING" and contact.marketing_opt_out:
                 r.status, r.error = "skipped", "El contacto no acepta marketing (opt-out)"
             else:

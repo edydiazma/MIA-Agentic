@@ -47,6 +47,7 @@ export const NAV: NavEntry[] = [
         items: [
           { label: "Tareas automatizadas", href: "/automatizaciones/tareas" },
           { label: "Webhooks", href: "/automatizaciones/webhooks" },
+          { label: "Webhooks entrantes", href: "/automatizaciones/webhooks-entrantes" },
           { label: "Calidad (QA)", href: "/automatizaciones/calidad" },
         ],
       },
@@ -66,6 +67,9 @@ export const NAV: NavEntry[] = [
           { label: "Análisis de flujos", href: "/reportes/flujos" },
           { label: "Canales", href: "/reportes/canales" },
           { label: "Calidad y coaching", href: "/reportes/calidad" },
+          { label: "Clientes (BI)", href: "/reportes/clientes" },
+          { label: "Productos", href: "/reportes/productos" },
+          { label: "Datos maestros", href: "/reportes/datos-maestros" },
           { label: "Llamadas", href: "/reportes/llamadas" },
         ],
       },
@@ -79,6 +83,7 @@ export const NAV: NavEntry[] = [
           { label: "Tráfico web", href: "/reportes/trafico-web" },
           { label: "Atribución y conversiones", href: "/reportes/atribucion" },
           { label: "Mensajes disparadores", href: "/reportes/mensajes-disparadores" },
+          { label: "Anuncios", href: "/reportes/anuncios" },
         ],
       },
       {
@@ -126,12 +131,14 @@ export const NAV: NavEntry[] = [
       {
         label: "",
         items: [
+          { label: "Asistente de configuración", href: "/onboarding" },
           { label: "Plataforma", href: "/configuraciones/plataforma" },
           { label: "Mensajería", href: "/configuraciones/mensajeria" },
           { label: "Conversaciones", href: "/configuraciones/conversaciones" },
           { label: "Magia de IA", href: "/configuraciones/magia" },
           { label: "Clasificación IA", href: "/configuraciones/clasificacion" },
           { label: "Campos de cliente", href: "/configuraciones/campos" },
+          { label: "Campos y datos maestros", href: "/configuraciones/datos-maestros" },
           { label: "Gestión usuarios", href: "/configuraciones/usuarios" },
           { label: "Reportes", href: "/configuraciones/reportes" },
           { label: "Mi empresa", href: "/configuraciones/empresa" },

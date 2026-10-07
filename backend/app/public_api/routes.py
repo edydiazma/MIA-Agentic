@@ -32,9 +32,14 @@ CONNECTORS = ("api", "zapier", "make", "n8n")
 def contact_json(c: Contact) -> dict:
     from app.fields import custom_values
 
-    return {"id": c.id, "phone": c.wa_id, "name": c.name, "email": c.email, "stage": c.stage, "notes": c.notes,
+    return {"id": c.id, "phone": c.wa_id, "whatsapp_username": c.wa_username, "whatsapp_bsuid": c.wa_bsuid,
+            "name": c.name, "email": c.email, "stage": c.stage, "notes": c.notes,
             "tags": sorted(link.tag.name for link in c.tag_links), "custom_fields": custom_values(c),
             "marketing_opt_out": c.marketing_opt_out, "blocked": c.blocked,
+            "channels": list(c.channel_providers or []),
+            "first_interaction_at": c.first_interaction_at, "last_interaction_at": c.last_interaction_at,
+            "last_inbound_at": c.last_inbound_at, "conversations_count": c.conversations_count,
+            "messages_in": c.messages_in, "messages_out": c.messages_out, "products_count": c.products_count,
             "created_at": c.created_at, "updated_at": c.updated_at}
 
 
@@ -112,7 +117,7 @@ async def _contact(session: AsyncSession, org: int, contact_id: int) -> Contact:
 
 
 async def _apply_contact(session: AsyncSession, contact: Contact, data: dict, replace_tags: bool) -> None:
-    from app.fields import coerce, fields_by_key, set_custom, set_native
+    from app.fields import set_native
     from app.routers.contacts import STAGES, set_contact_tags
 
     if data.get("stage") is not None and data["stage"] not in STAGES:
@@ -125,15 +130,17 @@ async def _apply_contact(session: AsyncSession, contact: Contact, data: dict, re
         await session.refresh(contact, ["tag_links"])
         await set_contact_tags(session, contact, data["tags"], "api", replace=replace_tags)
     if data.get("custom_fields"):
-        defs = await fields_by_key(session, contact.organization_id)
+        from app.golden.fields import field_index, resolve_field, write_value
+
+        index = await field_index(session, contact.organization_id)  # clave, etiqueta o alias
         errors = []
         for key, raw in data["custom_fields"].items():
-            field = defs.get(key)
+            field = await resolve_field(session, contact.organization_id, key, index)
             if not field:
                 errors.append(f"Campo desconocido: {key}")
                 continue
             try:
-                await set_custom(session, contact, field, coerce(field, raw), "api")
+                await write_value(session, contact, field, raw, "api")
             except ValueError as e:
                 errors.append(f"{key}: {e}")
         if errors:
@@ -156,7 +163,8 @@ async def list_contacts(q: str | None = None, tag: str | None = None, stage: str
     stmt = select(Contact).where(Contact.organization_id == ctx.org)
     if q:
         like = f"%{q.strip()}%"
-        stmt = stmt.where(or_(Contact.name.ilike(like), Contact.wa_id.ilike(like), Contact.email.ilike(like)))
+        stmt = stmt.where(or_(Contact.name.ilike(like), Contact.wa_id.ilike(like), Contact.email.ilike(like),
+                              Contact.wa_username.ilike(like), Contact.wa_bsuid.ilike(like)))
     if stage:
         stmt = stmt.where(Contact.stage == stage)
     if tag:
@@ -240,6 +248,58 @@ async def contact_tags(contact_id: int, body: TagsIn, ctx: ApiContext = Depends(
     return await _reloaded(session, contact)
 
 
+# --- Productos por interacción (Cliente 360) --------------------------------------------
+class ContactProductIn(BaseModel):
+    conversation_id: int | None = Field(default=None, description="Conversación (por defecto la más reciente)")
+    product_id: int | None = Field(default=None, description="Producto del catálogo")
+    external_ref: str | None = Field(default=None, description="Código del producto en tu sistema (ERP/CRM)")
+    name: str | None = None
+    stage: str = Field(default="interested", description="mentioned | interested | quoted | purchased | not_interested")
+    quantity: float | None = None
+    unit_price: float | None = None
+    currency: str | None = None
+
+
+@router.get("/contacts/{contact_id}/products", summary="Productos del cliente por interacción")
+async def list_contact_products(contact_id: int, ctx: ApiContext = Depends(require("contacts:read")),
+                                session: AsyncSession = Depends(get_session)):
+    from app.interaction_products import items_out
+    from app.models import InteractionProduct
+
+    await _contact(session, ctx.org, contact_id)
+    rows = (await session.scalars(select(InteractionProduct).where(InteractionProduct.contact_id == contact_id)
+                                  .order_by(InteractionProduct.created_at.desc()))).all()
+    return {"data": await items_out(session, list(rows))}
+
+
+@router.post("/contacts/{contact_id}/products", summary="Registrar un producto en la conversación del cliente",
+             status_code=201)
+async def add_contact_product(contact_id: int, body: ContactProductIn,
+                              ctx: ApiContext = Depends(require("contacts:write")),
+                              session: AsyncSession = Depends(get_session)):
+    from app.interaction_products import ProductError, add_product, item_out
+
+    contact = await _contact(session, ctx.org, contact_id)
+    if body.conversation_id is not None:
+        conv = await _conversation(session, ctx.org, body.conversation_id)
+        if conv.contact_id != contact.id:
+            raise ApiError(422, "La conversación no es de este contacto")
+    else:
+        conv = (await session.scalars(select(Conversation).where(Conversation.contact_id == contact.id)
+                                      .order_by(Conversation.last_message_at.desc().nulls_last(),
+                                                Conversation.id.desc()).limit(1))).first()
+        if conv is None:
+            raise ApiError(409, "El contacto no tiene conversaciones; indica una o envíale un mensaje primero")
+    try:
+        row, _ = await add_product(session, conv, stage=body.stage, source="api", product_id=body.product_id,
+                                   external_ref=body.external_ref, name=body.name, quantity=body.quantity,
+                                   unit_price=body.unit_price, currency=body.currency)
+    except ProductError as e:
+        raise ApiError(422, str(e)) from e
+    await session.commit()
+    return await item_out(session, row)
+
+
 # --- Conversaciones y mensajes ---------------------------------------------------------
 class AssignIn(BaseModel):
     agent_id: int | None = Field(default=None, description="null = sin asesor (queda en la cola del grupo)")
@@ -263,7 +323,10 @@ class SendIn(BaseModel):
 
 
 class SendToPhoneIn(SendIn):
-    phone: str
+    phone: str | None = Field(default=None, description="Teléfono internacional; o usa contact_id / bsuid")
+    contact_id: int | None = Field(default=None, description="Contacto existente (sirve si solo tiene usuario de "
+                                                             "WhatsApp, sin teléfono)")
+    bsuid: str | None = Field(default=None, description="ID de usuario de WhatsApp (BSUID), p. ej. CO.1349…")
     channel_id: int | None = Field(default=None, description="Número de WhatsApp de la empresa (por defecto el primero)")
     name: str | None = None
 
@@ -398,17 +461,28 @@ async def send_to_phone(body: SendToPhoneIn, idem: Idempotency = Depends(idempot
     from app.routers.contacts import normalize_phone
     from app.service import get_or_create_contact, get_or_create_conversation
 
+    from app.identity import is_bsuid
+
     org = idem.org
-    phone = normalize_phone(body.phone)
-    if not phone:
+    phone = normalize_phone(body.phone) if body.phone else None
+    if body.phone and not phone:
         raise ApiError(422, "Teléfono inválido: usa el formato internacional, p. ej. 573001234567")
+    if body.bsuid and not is_bsuid(body.bsuid):
+        raise ApiError(422, "BSUID inválido: debe ser como CO.13491208655302741918")
+    if not (phone or body.bsuid or body.contact_id):
+        raise ApiError(422, "Indica `phone`, `bsuid` o `contact_id`")
     stmt = select(Channel).where(Channel.organization_id == org, Channel.provider == "whatsapp_cloud")
     if body.channel_id is not None:
         stmt = stmt.where(Channel.id == body.channel_id)
     channel = (await session.scalars(stmt.order_by(Channel.id).limit(1))).first()
     if not channel:
         raise ApiError(404 if body.channel_id else 409, "No hay un número de WhatsApp conectado")
-    contact, _ = await get_or_create_contact(session, org, phone, body.name)
+    if body.contact_id is not None:
+        contact = await _contact(session, org, body.contact_id)
+        if not (contact.wa_id or contact.wa_bsuid):
+            raise ApiError(422, "El contacto no tiene teléfono ni usuario de WhatsApp")
+    else:
+        contact, _ = await get_or_create_contact(session, org, phone, body.name, bsuid=body.bsuid)
     if contact.blocked:
         raise ApiError(409, "El contacto está bloqueado", code="contact_blocked")
     await session.flush()
