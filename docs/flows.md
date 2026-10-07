@@ -54,7 +54,7 @@ Colors follow Scratch 3's convention by category.
 
 | Category | Block (`type`) | Junior | Inputs | Notes |
 |---|---|---|---|---|
-| **Events** (hat) | `inbound_message`, `keyword`, `handoff`, `close`, `schedule`, `webhook`, `manual`, `campaign_reply`, `wa_link` | ✔ | trigger config | Only one per script; equals `flows.trigger_type`. `wa_link`: when the customer arrives through a trigger message (`links`: slugs or names, empty = any); a link with `flow_id` starts that flow (its `wa_link` script, else its first script) |
+| **Events** (hat) | `inbound_message`, `keyword`, `handoff`, `close`, `schedule`, `webhook`, `manual`, `campaign_reply`, `wa_link`, `typified` | ✔ | trigger config | Only one per script; equals `flows.trigger_type`. `typified` ("Cuando se tipifica"): `typifications` = names (empty = any); fires when an agent or the AI typifies (never from a flow, to avoid loops). `wa_link`: when the customer arrives through a trigger message (`links`: slugs or names, empty = any); a link with `flow_id` starts that flow (its `wa_link` script, else its first script) |
 | **Messages** | `send_text` | ✔ | text | Respects the 24 h window |
 | | `send_media` | ✔ | resource_id / url, caption | From the resource library |
 | | `send_buttons` | ✔ | text, buttons[≤3] | Interactive buttons |
@@ -101,3 +101,43 @@ Colors follow Scratch 3's convention by category.
 Schema and returns the complete new definition. It is validated (schema + business rules: unique ids, one hat per
 script, existing references) and saved as a **new version** `flow_versions` with `created_by_ai = true` and
 `ai_prompt`. The editor shows the diff before it is published.
+
+## 6. Template: automatic follow-up after a typification
+
+"Seguimiento automático: Pendiente respuesta cliente → 30 min, 1 h, 2 h, 3 h → tipificar". When an agent closes a
+conversation as **Pendiente respuesta cliente**, the flow writes to the customer at 30 min, 1 h, 2 h and 3 h; each
+`wait_reply` resumes as soon as the customer answers (then the flow stops and the conversation is back in the bot /
+inbox), otherwise after its timeout. With no answer it typifies as **Sin respuesta**. Outside the 24 h WhatsApp
+window replace `send_text` with `send_template` (an approved utility template).
+
+```json
+{
+  "schema_version": 1,
+  "variables": [],
+  "scripts": [{
+    "id": "seguimiento",
+    "trigger": {"type": "typified", "config": {"typifications": ["Pendiente respuesta cliente"]}},
+    "blocks": [
+      {"id": "w1", "type": "wait_reply", "inputs": {"timeout_min": 30}},
+      {"id": "c1", "type": "if", "inputs": {"condition": {"op": "empty", "left": "{{last_message.text}}"}},
+       "branches": {"then": [
+        {"id": "s1", "type": "send_text", "inputs": {"text": "Hola {{contact.first_name}}, ¿pudiste revisar la información? Quedo atento 🙂"}},
+        {"id": "w2", "type": "wait_reply", "inputs": {"timeout_min": 30}},
+        {"id": "c2", "type": "if", "inputs": {"condition": {"op": "empty", "left": "{{last_message.text}}"}},
+         "branches": {"then": [
+          {"id": "s2", "type": "send_text", "inputs": {"text": "¿Te ayudo con algo más para avanzar?"}},
+          {"id": "w3", "type": "wait_reply", "inputs": {"timeout_min": 60}},
+          {"id": "c3", "type": "if", "inputs": {"condition": {"op": "empty", "left": "{{last_message.text}}"}},
+           "branches": {"then": [
+            {"id": "s3", "type": "send_text", "inputs": {"text": "Sigo pendiente de tu respuesta, {{contact.first_name}}."}},
+            {"id": "w4", "type": "wait_reply", "inputs": {"timeout_min": 60}},
+            {"id": "c4", "type": "if", "inputs": {"condition": {"op": "empty", "left": "{{last_message.text}}"}},
+             "branches": {"then": [{"id": "t1", "type": "typify_close", "inputs": {"typification": "Sin respuesta"}}]}}
+           ]}}
+         ]}}
+       ]}}
+    ]
+  }]
+}
+```
+

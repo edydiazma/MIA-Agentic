@@ -44,7 +44,15 @@ ROUTERS = ["webhook", "auth", "inbox", "bots", "knowledge", "contacts", "campaig
            # Agente avanzado: etapas y tipificaciones; webhooks entrantes (panel y público)
            "pipeline_stages", "inbound_webhooks", "hooks_public",
            # Registro maestro: llaves, vehículos, consentimientos, duplicados y organización de campos
-           "golden"]
+           "golden",
+           # Supervisión: monitoreo, asignación masiva, transcripción, roles en grupos (§18.2)
+           "monitoring",
+           # Productividad: notificaciones, notas, línea de tiempo, iniciar conversación, respuestas rápidas (§18.3)
+           "notifications", "outreach",
+           # Contact center: estados de asesor, horarios por grupo, enrutamiento y dueño del cliente (§18.1)
+           "agent_status", "business_hours", "group_routing",
+           # Seguridad: 2FA, contraseñas, SSO, roles y permisos, auditoría de acceso (§18.4)
+           "security", "sso_public", "roles"]
 
 
 async def bootstrap(org: int | None = None) -> None:
@@ -121,6 +129,9 @@ LOOPS = [
     "app.ads.spend:spend_loop",  # inversión por anuncio y día (Meta Insights, Google Ads), cada hora
     "app.golden.hooks:golden_loop",  # documentos pendientes (1 min) y oportunidades por vehículo (6 h)
     "app.recovery:recovery_loop",  # recuperación por inactividad del agente de IA (intentos + fin)
+    "app.notifications:followup_reminder_loop",  # avisa seguimientos / llamadas vencidas (una sola vez)
+    "app.automations:sla_loop",  # reglas de SLA con temporizador (una vez por ciclo)
+    "app.statuses:sessions_loop",  # sesiones sin latido → desconectado
 ]
 
 
@@ -218,3 +229,10 @@ async def ws(websocket: WebSocket, token: str):
             await websocket.receive_text()  # ping del cliente
     except WebSocketDisconnect:
         await hub.disconnect(websocket)
+        if agent.id not in hub.online_agent_ids(agent.organization_id):  # cerró la última pestaña
+            try:
+                from app.statuses import on_ws_disconnect
+
+                on_ws_disconnect(agent.id, agent.organization_id)
+            except (ImportError, AttributeError):
+                pass

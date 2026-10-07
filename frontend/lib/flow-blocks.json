@@ -114,6 +114,22 @@
    "inputs": []
   },
   {
+   "type": "typified",
+   "category": "events",
+   "label": "Cuando se tipifica",
+   "icon": "✅",
+   "junior": true,
+   "shape": "hat",
+   "inputs": [
+    {
+     "name": "typifications",
+     "label": "Tipificaciones (vacío = cualquiera)",
+     "type": "options",
+     "required": false
+    }
+   ]
+  },
+  {
    "type": "schedule",
    "category": "events",
    "label": "Cada cierto tiempo",

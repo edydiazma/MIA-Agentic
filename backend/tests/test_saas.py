@@ -108,7 +108,7 @@ async def test_signup_isolation_plan_limits_and_features(client):
 
 
 async def test_multi_org_login_and_switch(client):
-    email, password = "multi@empresas.test", "misma-clave-9"
+    email, password = "multi@empresas.test", "Misma-Clave-2026"
     r = await client.post("/api/agents", json={"email": email, "name": "Multi", "password": password, "role": "agent"})
     assert r.status_code == 200, r.text
     async with _anon() as anon:

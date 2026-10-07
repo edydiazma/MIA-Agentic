@@ -31,6 +31,12 @@ reports, on **Supabase** (Postgres + Realtime + Storage + Vault + cron).
 | **Omnicanal** | Instagram DM, Facebook Messenger and a web chat widget (`/w/{key}.js`) in the same inbox, flows and AI agents |
 | **Calidad (QA) y coaching** | AI review of closed conversations against rubrics, human review and disputes, coaching per advisor ("Mi coaching"), automated tests for AI agents |
 | **API pública** | `/v1` with API keys and scopes, rate limits, idempotency, REST Hooks for Zapier / Make / n8n (`docs/api.md`); installable advisor app (PWA) with push notifications |
+| **Onboarding** | Setup wizard: Embedded Signup, number validation with fixes, profile, industry templates, AI, team, test, go-live |
+| **Clientes 360 / Datos maestros** | WhatsApp username/BSUID, first/last interaction BI, products per interaction, golden record (identification keys from chats and documents), vehicles, consents, duplicates |
+| **Anuncios** | Post → ad resolution, first/last source per customer, Meta/Google spend, CPL/CPA/ROAS |
+| **Contact center** | Custom agent statuses + Login report, business hours per group, routing rules, client owner, SLA timers, inbound webhooks |
+| **Supervisión** | Group-scoped supervisors, Monitoreo, service KPIs (AHT, ASA, attention/abandonment), transcripts |
+| **Seguridad** | Roles & permissions, SSO (SAML/OIDC), 2FA, password policy, self-service reset, access audit |
 | **Seguimiento / Configuraciones** | Follow-ups, appointments; platform, messaging, conversations, AI classification, client fields, users, company, resources, appointments |
 
 ## Architecture
@@ -55,7 +61,7 @@ Requirements: Python 3.13+, Node 22+, Postgres 17 (Homebrew `postgresql@17`) for
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 cp .env.example .env     # DATABASE_URL → your Supabase project (Session pooler) or a local Postgres with the migrations
-.venv/bin/python -m pytest          # builds a temporary Postgres from supabase/migrations and runs the 85 tests
+.venv/bin/python -m pytest          # builds a temporary Postgres from supabase/migrations and runs the 159 tests
 .venv/bin/python -m app.demo        # (optional) demo data — dev environments only
 .venv/bin/uvicorn app.main:app --reload --port 8000
 

@@ -710,6 +710,13 @@ def script_matches(script: dict, trigger_type: str, text: str | None) -> bool:
                 return any(norm(str(k)) == norm(text or "") for k in kws)
             return any(norm(str(k)) in norm(text or "") for k in kws)
         return False
+    if trigger_type == "typified":
+        # «Cuando se tipifica»: text = nombre de la tipificación; sin lista = cualquiera
+        if trig.get("type") != "typified":
+            return False
+        wanted = (trig.get("config") or {}).get("typifications") or []
+        wanted = [w for w in (wanted if isinstance(wanted, list) else str(wanted).split(",")) if norm(str(w))]
+        return not wanted or norm(text or "") in {norm(str(w)) for w in wanted}
     return trig.get("type") == trigger_type
 
 
@@ -814,18 +821,26 @@ async def handle_inbound(session: AsyncSession, conv: Conversation, msg: Message
 
 
 async def on_event(conversation_id: int, event: str) -> None:
-    """Disparadores handoff / close (en segundo plano para no bloquear al llamador)."""
+    """Disparadores handoff / close / typified (en segundo plano para no bloquear al llamador)."""
     async def job():
         async with SessionLocal() as session:
             conv = await session.get(Conversation, conversation_id)
             if not conv:
                 return
+            text = None
+            if event == "typified":
+                if not conv.typification_id:
+                    return
+                from app.models import Typification
+
+                typ = await session.get(Typification, conv.typification_id)
+                text = typ.name if typ else None
             for flow in await _active_flows(session, conv.organization_id, [event]):
                 version = flow.current_version
                 for i, script in enumerate(version.definition.get("scripts") or []):
-                    if script_matches(script, event, None):
+                    if script_matches(script, event, text):
                         await set_actor(session, "flow")
-                        await start_run(session, flow, version, i, conv, event, None)
+                        await start_run(session, flow, version, i, conv, event, text)
     task = asyncio.create_task(job())
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)

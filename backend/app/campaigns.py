@@ -8,8 +8,16 @@ from sqlalchemy import select
 from app import templates
 from app.db import SessionLocal, set_actor
 from app.identity import require_phone_for_template, wa_address
-from app.models import Campaign, CampaignRecipient, Channel, Message, utcnow
-from app.service import create_alert, get_or_create_conversation, record_message, wa_client
+from app.models import Campaign, CampaignRecipient, Channel, Conversation, Message, utcnow
+from app.service import (
+    commit_and_broadcast,
+    create_alert,
+    get_or_create_conversation,
+    record_message,
+    reload,
+    set_conversation_tags,
+    wa_client,
+)
 
 log = logging.getLogger(__name__)
 SEND_INTERVAL = 0.05  # ~20 msg/s, por debajo del throughput estándar de Meta
@@ -34,6 +42,35 @@ async def send_template_message(session, conv, tpl: dict, values: list[str], sen
     except Exception as e:
         msg.status, msg.error = "failed", str(e)[:2000]
     return await record_message(session, conv, msg)
+
+
+async def _conversation_for(session, channel: Channel, contact, options: dict) -> Conversation:
+    """options.conversation = "new" abre una conversación nueva; si no, continúa la última del canal."""
+    if options.get("conversation") == "new":
+        conv = Conversation(organization_id=channel.organization_id, contact_id=contact.id, channel_id=channel.id,
+                            ai_agent_id=channel.default_ai_agent_id, status="bot")
+        session.add(conv)
+        await session.flush()
+        return await reload(session, conv)
+    return await get_or_create_conversation(session, channel, contact, reopen=False)
+
+
+async def apply_options(session, conv: Conversation, options: dict) -> None:
+    """Después de enviar: asignar a asesor / grupo, bot on|off y etiquetas (campañas desde la lista de clientes)."""
+    if not options:
+        return
+    if options.get("tags"):
+        await session.refresh(conv, ["tag_links"])
+        await set_conversation_tags(session, conv, list(options["tags"]), "agent", replace=False)
+    if options.get("assign_group_id"):
+        conv.group_id = int(options["assign_group_id"])
+    if options.get("bot") == "on":
+        conv.status, conv.assigned_agent_id = "bot", None
+    elif options.get("bot") == "off" or options.get("assign_agent_id"):
+        conv.status = "human"
+        if options.get("assign_agent_id"):
+            conv.assigned_agent_id = int(options["assign_agent_id"])
+    await commit_and_broadcast(session, conv)
 
 
 async def run_campaign(campaign_id: int) -> None:
@@ -77,7 +114,7 @@ async def run_campaign(campaign_id: int) -> None:
                 r.status, r.error = "skipped", "El contacto no acepta marketing (opt-out)"
             else:
                 await set_actor(session, "system")
-                conv = await get_or_create_conversation(session, channel, contact, reopen=False)
+                conv = await _conversation_for(session, channel, contact, campaign.options or {})
                 msg = await send_template_message(session, conv, tpl,
                                                   templates.personalize(campaign.params or [], contact.name),
                                                   sender_type="campaign", campaign_id=campaign.id)
@@ -87,6 +124,8 @@ async def run_campaign(campaign_id: int) -> None:
                     failed += 1
                 else:
                     r.status, r.sent_at = "sent", utcnow()
+                    if campaign.options:
+                        await apply_options(session, conv, campaign.options)
             await session.commit()
             await asyncio.sleep(SEND_INTERVAL)
 

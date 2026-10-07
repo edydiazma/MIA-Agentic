@@ -40,13 +40,15 @@ def verify_password(password: str, hashed: str | None) -> bool:
         return False
 
 
-def create_token(agent: Agent, orgs: list[int] | None = None) -> str:
+def create_token(agent: Agent, orgs: list[int] | None = None, minutes: int | None = None) -> str:
+    """`minutes`: vigencia según la política de sesión de la empresa (nunca más que JWT_EXPIRE_MINUTES)."""
+    ttl = min(minutes or settings.jwt_expire_minutes, settings.jwt_expire_minutes)
     payload = {
         "sub": str(agent.id),
         "org": agent.organization_id,
         "orgs": sorted(set((orgs or []) + [agent.organization_id]))[:50],
         "role": agent.role,
-        "exp": datetime.now(UTC) + timedelta(minutes=settings.jwt_expire_minutes),
+        "exp": datetime.now(UTC) + timedelta(minutes=ttl),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 

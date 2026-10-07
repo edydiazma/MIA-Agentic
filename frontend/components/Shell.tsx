@@ -4,14 +4,12 @@ import { createContext, useContext, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  AVAILABILITY_LABEL,
   api,
   getAgent,
   getToken,
   send,
   setSession,
   type Agent,
-  type Availability,
 } from "@/lib/api";
 import { NAV, type NavEntry } from "@/lib/nav";
 import { RealtimeProvider, useRealtime, useRealtimeStatus } from "@/lib/realtime";
@@ -20,6 +18,9 @@ import { ONBOARDING_SKIP_KEY, type OnboardingState } from "@/lib/onboarding-type
 import { OrgSwitcher } from "@/components/saas/OrgSwitcher";
 import { PlanBanner } from "@/components/saas/PlanBanner";
 import { IncomingCallManager } from "@/components/voice/IncomingCallManager";
+import StatusSelector from "@/components/ops/StatusSelector";
+import NotificationBell from "@/components/notifications/NotificationBell";
+import SecurityGate from "@/components/security/SecurityGate";
 
 const MeContext = createContext<Agent | null>(null);
 /** Usuario que inició sesión (role, availability...). */
@@ -124,13 +125,9 @@ function Shell({ me, setMe, children }: { me: Agent; setMe: (a: Agent) => void; 
     if (path === "/") setAlerts(0);
   }, [path]);
 
-  async function changeAvailability(v: Availability) {
-    const updated = await send<Agent>("/api/auth/me/availability", "PUT", { availability: v });
-    setSession(getToken(), updated);
-    setMe(updated);
-  }
-
-  function logout() {
+  async function logout() {
+    // Cierra la sesión en el servidor (estado «Desconectado», auditoría); si falla igual sale
+    await send("/api/auth/logout", "POST").catch(() => undefined);
     setSession(null);
     router.replace("/login");
   }
@@ -142,7 +139,7 @@ function Shell({ me, setMe, children }: { me: Agent; setMe: (a: Agent) => void; 
           <span className="brand-mark">◆</span> WA Agent
         </div>
         <nav className="nav">
-          {NAV.filter((e) => isAdmin || !e.adminOnly).map((e) => (
+          {NAV.filter((e) => (isAdmin || !e.adminOnly) && (!e.staffOnly || isAdmin || me.role === "supervisor")).map((e) => (
             <Section key={e.label} entry={e} path={path} isAdmin={isAdmin} onNavigate={() => setMenuOpen(false)} />
           ))}
         </nav>
@@ -161,25 +158,18 @@ function Shell({ me, setMe, children }: { me: Agent; setMe: (a: Agent) => void; 
           )}
           <div className="topbar-right">
             <OrgSwitcher />
-            <select
-              className={`availability ${me.availability}`}
-              value={me.availability}
-              onChange={(e) => changeAvailability(e.target.value as Availability)}
-              aria-label="Disponibilidad"
-            >
-              {(Object.keys(AVAILABILITY_LABEL) as Availability[]).map((a) => (
-                <option key={a} value={a}>
-                  {AVAILABILITY_LABEL[a]}
-                </option>
-              ))}
-            </select>
+            <StatusSelector myAgentId={me.id} />
+            <NotificationBell />
             <span className="user">
               {me.name}
-              <small className="muted">{isAdmin ? "Administrador" : "Asesor"}</small>
+              <small className="muted">
+                {isAdmin ? "Administrador" : me.role === "supervisor" ? "Supervisor" : "Asesor"}
+              </small>
             </span>
             <button onClick={logout}>Salir</button>
           </div>
         </header>
+        <SecurityGate />
         <PlanBanner plan={plan} />
         <main className="content">{children}</main>
         <IncomingCallManager />

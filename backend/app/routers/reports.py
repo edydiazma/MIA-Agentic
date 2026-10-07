@@ -7,6 +7,7 @@ Las medianas salen de los hechos (conversation_events), porque un rollup no pued
 
 import csv
 import io
+from urllib.parse import urlparse
 from collections import Counter, defaultdict
 from datetime import UTC, date, datetime, timedelta
 from statistics import median
@@ -18,11 +19,14 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import current_agent
+from app.permissions import require_permission
 from app.db import get_session
 from app.fields import custom_values, fields_by_key
 from app.models import (
     Agent,
     AgentGroup,
+    AgentSession,
+    AgentStatus,
     AIConnection,
     AIConnectionHealth,
     Alert,
@@ -43,6 +47,7 @@ from app.models import (
     utcnow,
 )
 from app.realtime import hub
+from app.scope import agent_clause, conversation_clause, conversation_visible, scope_for
 from app.flows.catalog import BLOCKS
 from app.routers.campaigns import campaign_stats
 from app.routers.config import integration_status
@@ -181,36 +186,90 @@ async def control_center(agent: Agent = Depends(current_agent), session: AsyncSe
 async def realtime(agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
     org = agent.organization_id
     now = utcnow()
-    open_rows = (await session.execute(
-        select(Conversation.status, Conversation.assigned_agent_id, Conversation.group_id, Conversation.unread_count,
-               Conversation.handoff_at, Conversation.last_message_at)
-        .where(Conversation.organization_id == org, Conversation.status != "closed"))).all()
+    scope = await scope_for(session, agent)
+    clause = conversation_clause(scope)
+    stmt = select(Conversation.status, Conversation.assigned_agent_id, Conversation.group_id, Conversation.unread_count,
+                  Conversation.handoff_at, Conversation.last_message_at) \
+        .where(Conversation.organization_id == org, Conversation.status != "closed")
+    open_rows = (await session.execute(stmt if clause is None else stmt.where(clause))).all()
     by_status = Counter(r.status for r in open_rows)
     waiting = [r for r in open_rows if r.status == "human" and not r.assigned_agent_id]
-    oldest = max(((now - (r.handoff_at or r.last_message_at)).total_seconds() / 60 for r in waiting), default=0)
+    waits = [(now - (r.handoff_at or r.last_message_at)).total_seconds() / 60 for r in waiting]
+    oldest = max(waits, default=0)
 
     online = hub.online_agent_ids()
-    agents = (await session.scalars(select(Agent).where(Agent.organization_id == org, Agent.is_active)
-                                    .order_by(Agent.name))).all()
-    groups = {g.id: g.name for g in (await session.scalars(select(Group).where(Group.organization_id == org))).all()}
+    a_stmt = select(Agent).where(Agent.organization_id == org, Agent.is_active).order_by(Agent.name)
+    a_clause = agent_clause(scope)
+    agents = (await session.scalars(a_stmt if a_clause is None else a_stmt.where(a_clause))).all()
+    g_stmt = select(Group).where(Group.organization_id == org)
+    if not scope.unrestricted:
+        g_stmt = g_stmt.where(Group.id.in_(sorted(scope.group_ids) or [0]))
+    groups = {g.id: g.name for g in (await session.scalars(g_stmt)).all()}
     memberships = defaultdict(list)
+    group_members: dict[int, set[int]] = defaultdict(set)
     for a_id, g_id in (await session.execute(select(AgentGroup.agent_id, AgentGroup.group_id)
                                              .where(AgentGroup.group_id.in_(list(groups) or [0])))).all():
         memberships[a_id].append(groups[g_id])
+        group_members[g_id].add(a_id)
     load = Counter(r.assigned_agent_id for r in open_rows if r.status == "human" and r.assigned_agent_id)
     unread = Counter()
     for r in open_rows:
         if r.assigned_agent_id:
             unread[r.assigned_agent_id] += r.unread_count
+
+    # Estado personalizado y tiempo en el estado actual (§18.1)
+    statuses = {st.id: st for st in (await session.scalars(
+        select(AgentStatus).where(AgentStatus.organization_id == org))).all()}
+
+    def status_of(a: Agent) -> dict | None:
+        st = statuses.get(getattr(a, "status_id", None))
+        if st is None:
+            return None
+        since = getattr(a, "status_changed_at", None)
+        return {"key": st.key, "name": st.name, "color": st.color, "icon": st.icon,
+                "receives_conversations": st.receives_conversations,
+                "seconds": int((now - since).total_seconds()) if since else None}
+
+    # Contadores desde las 00:00 (zona de la empresa)
+    tz = await _tz(session, org)
+    today = datetime.combine(now.astimezone(tz).date(), datetime.min.time(), tz)
+    c = Conversation
+    base = [c.organization_id == org]
+    if clause is not None:
+        base.append(clause)
+    t = (await session.execute(select(
+        func.count().filter(c.created_at >= today),
+        func.count().filter(c.handoff_at >= today),
+        func.count().filter(c.closed_at >= today),
+        func.count().filter(c.first_response_at >= today),
+        func.count().filter(c.closed_at >= today, c.handoff_at.is_not(None), c.first_response_at.is_(None),
+                            c.assigned_agent_id.is_(None)),
+        func.avg(func.extract("epoch", c.first_response_at - c.handoff_at))
+            .filter(c.first_response_at >= today, c.first_response_at >= c.handoff_at),
+    ).where(*base))).one()
+    group_rows = []
+    for gid, name in sorted(groups.items(), key=lambda kv: kv[1]):
+        q = [w for w in waiting if w.group_id == gid]
+        g_waits = [(now - (w.handoff_at or w.last_message_at)).total_seconds() / 60 for w in q]
+        members = group_members.get(gid, set())
+        group_rows.append({"group_id": gid, "name": name, "agents": len(members),
+                           "online": len(members & online), "queue": len(q),
+                           "open": sum(1 for r in open_rows if r.group_id == gid and r.status == "human"),
+                           "longest_wait_minutes": round(max(g_waits, default=0), 1)})
     return {
         "updated_at": now,
         "by_status": {"bot": by_status["bot"], "human": by_status["human"]},
         "waiting_unassigned": len(waiting),
         "oldest_wait_minutes": round(oldest, 1),
+        "avg_wait_minutes_now": round(sum(waits) / len(waits), 1) if waits else 0,
+        "today": {"incoming": t[0], "handoffs": t[1], "closed": t[2], "attended": t[3], "abandoned": t[4],
+                  "avg_first_response_s": int(t[5]) if t[5] is not None else None},
         "agents": [{"id": a.id, "name": a.name, "online": a.id in online, "availability": a.availability,
-                    "groups": memberships.get(a.id, []), "open": load.get(a.id, 0), "unread": unread.get(a.id, 0)}
+                    "status": status_of(a), "groups": memberships.get(a.id, []), "open": load.get(a.id, 0),
+                    "unread": unread.get(a.id, 0)}
                    for a in agents],
         "by_group": dict(Counter(groups.get(r.group_id, "Sin grupo") for r in open_rows if r.status == "human")),
+        "groups": group_rows,
     }
 
 
@@ -410,7 +469,9 @@ async def agents_report(start: date | None = None, end: date | None = None, agen
         ConversationEvent.organization_id == org, ConversationEvent.event_type == "handoff",
         ConversationEvent.occurred_at >= lo, ConversationEvent.occurred_at < hi)) or 0
     online = hub.online_agent_ids()
-    agents = (await session.scalars(select(Agent).where(Agent.organization_id == org).order_by(Agent.name))).all()
+    a_clause = agent_clause(await scope_for(session, agent))
+    a_stmt = select(Agent).where(Agent.organization_id == org).order_by(Agent.name)
+    agents = (await session.scalars(a_stmt if a_clause is None else a_stmt.where(a_clause))).all()
     rows = []
     for a in agents:
         r = roll.get(a.id, {})
@@ -628,15 +689,180 @@ async def flow_funnel(flow_id: int, start: date | None = None, end: date | None 
                         "failed": r["failed"]} for r in sorted(runs, key=lambda r: r["day"])]}
 
 
+# --- KPIs de servicio, reporte Login y enlaces (§18.2) ----------------------------
+SERVICE_KEYS = ("cases", "unique_contacts", "returning_cases", "bot_only", "handoffs", "attended", "not_attended",
+                "abandoned", "reassigned", "closed", "aht_sum_s", "aht_count", "wait_sum_s", "wait_count")
+
+
+def _service_kpis(t: Counter) -> dict:
+    """Totales + indicadores derivados (seguros ante división por cero)."""
+    out = {k: int(t.get(k, 0)) for k in SERVICE_KEYS if not k.endswith(("_sum_s", "_count"))}
+    out["aht_s"] = round(t["aht_sum_s"] / t["aht_count"]) if t.get("aht_count") else None
+    out["asa_s"] = round(t["wait_sum_s"] / t["wait_count"]) if t.get("wait_count") else None
+    out["attention_rate_pct"] = _pct(t.get("attended", 0), t.get("handoffs", 0))
+    out["abandonment_rate_pct"] = _pct(t.get("abandoned", 0), t.get("handoffs", 0))
+    out["bot_containment_pct"] = _pct(t.get("bot_only", 0), t.get("closed", 0))
+    return out
+
+
+@router.get("/reports/service")
+async def service_report(start: date | None = None, end: date | None = None, group_id: int | None = None,
+                         agent_id: int | None = None, agent: Agent = Depends(current_agent),
+                         session: AsyncSession = Depends(get_session)):
+    """AHT, ASA, tasa de atención y de abandono, contención del bot, clientes únicos vs casos (daily_service)."""
+    org = agent.organization_id
+    lo, hi, _tz, start, end = await _range(session, org, start, end)
+    scope = await scope_for(session, agent)
+    rows = await _rows(session, """
+        select * from reporting.daily_service where organization_id = :o and day between :a and :b""",
+        o=org, a=start, b=end)
+    if not scope.unrestricted:
+        rows = [r for r in rows if r["group_id"] in scope.group_ids or r["agent_id"] in scope.member_ids
+                or r["agent_id"] == scope.agent_id]
+    if group_id is not None:
+        rows = [r for r in rows if r["group_id"] == group_id]
+    if agent_id is not None:
+        rows = [r for r in rows if r["agent_id"] == agent_id]
+    totals: Counter = Counter()
+    by_group: dict[int, Counter] = defaultdict(Counter)
+    by_agent: dict[int, Counter] = defaultdict(Counter)
+    by_day: dict[date, Counter] = defaultdict(Counter)
+    for r in rows:
+        for k in SERVICE_KEYS:
+            v = int(r[k] or 0)
+            totals[k] += v
+            by_group[r["group_id"]][k] += v
+            by_agent[r["agent_id"]][k] += v
+            by_day[r["day"]][k] += v
+    # Clientes únicos: exactos desde las conversaciones (no se pueden sumar entre filas del rollup)
+    cv = Conversation
+    conds = [cv.organization_id == org, cv.created_at >= lo, cv.created_at < hi]
+    clause = conversation_clause(scope)
+    if clause is not None:
+        conds.append(clause)
+    if group_id is not None:
+        conds.append(func.coalesce(cv.group_id, 0) == group_id)
+    if agent_id is not None:
+        conds.append(func.coalesce(cv.assigned_agent_id, 0) == agent_id)
+    totals["unique_contacts"] = await session.scalar(
+        select(func.count(func.distinct(cv.contact_id))).where(*conds)) or 0
+    for key_col, bucket in ((func.coalesce(cv.group_id, 0), by_group), (func.coalesce(cv.assigned_agent_id, 0), by_agent)):
+        for k, n in (await session.execute(select(key_col, func.count(func.distinct(cv.contact_id)))
+                                           .where(*conds).group_by(key_col))).all():
+            if k in bucket:
+                bucket[k]["unique_contacts"] = n
+    names_g = {g.id: g.name for g in (await session.scalars(select(Group).where(Group.organization_id == org))).all()}
+    names_a = {a.id: a.name for a in (await session.scalars(select(Agent).where(Agent.organization_id == org))).all()}
+    return {
+        "start": start, "end": end, "totals": _service_kpis(totals),
+        "by_group": sorted(({"group_id": g or None, "name": names_g.get(g, "Sin grupo"), **_service_kpis(t)}
+                            for g, t in by_group.items()), key=lambda x: -x["cases"]),
+        "by_agent": sorted(({"agent_id": a or None, "name": names_a.get(a, "Sin asesor"), **_service_kpis(t)}
+                            for a, t in by_agent.items()), key=lambda x: -x["cases"]),
+        "series": [{"day": d.isoformat(), **_service_kpis(by_day.get(d, Counter()))} for d in _days(start, end)],
+    }
+
+
+@router.get("/reports/login")
+async def login_report(start: date | None = None, end: date | None = None, agent_id: int | None = None,
+                       agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
+    """Tiempo por estado de cada asesor (daily_agent_status), tiempo laborado y primer ingreso / última salida."""
+    org = agent.organization_id
+    lo, hi, tz, start, end = await _range(session, org, start, end)
+    scope = await scope_for(session, agent)
+    a_stmt = select(Agent).where(Agent.organization_id == org).order_by(Agent.name)
+    clause = agent_clause(scope)
+    agents = (await session.scalars(a_stmt if clause is None else a_stmt.where(clause))).all()
+    if agent_id is not None:
+        agents = [a for a in agents if a.id == agent_id]
+    ids = [a.id for a in agents] or [0]
+    statuses = (await session.scalars(select(AgentStatus).where(AgentStatus.organization_id == org)
+                                      .order_by(AgentStatus.position))).all()
+    working = {st.key for st in statuses if st.counts_as_working}
+    by_agent: dict[int, Counter] = defaultdict(Counter)
+    for r in await _rows(session, """
+            select agent_id, status_key, sum(seconds)::bigint as seconds from reporting.daily_agent_status
+            where organization_id = :o and day between :a and :b and agent_id = any(:ids)
+            group by agent_id, status_key""", o=org, a=start, b=end, ids=ids):
+        by_agent[r["agent_id"]][r["status_key"]] += int(r["seconds"])
+    sessions: dict[int, dict[date, dict]] = defaultdict(dict)
+    for s_row in (await session.scalars(select(AgentSession).where(
+            AgentSession.organization_id == org, AgentSession.agent_id.in_(ids),
+            AgentSession.started_at < hi, func.coalesce(AgentSession.ended_at, AgentSession.last_seen_at) >= lo)
+            .order_by(AgentSession.started_at))).all():
+        day = s_row.started_at.astimezone(tz).date()
+        end_at = s_row.ended_at or s_row.last_seen_at
+        d = sessions[s_row.agent_id].setdefault(day, {"day": day.isoformat(), "first_login": s_row.started_at,
+                                                      "last_logout": end_at, "sessions": 0})
+        d["first_login"] = min(d["first_login"], s_row.started_at)
+        d["last_logout"] = max(d["last_logout"], end_at) if end_at else d["last_logout"]
+        d["sessions"] += 1
+    return {
+        "start": start, "end": end,
+        "statuses": [{"key": st.key, "name": st.name, "color": st.color, "counts_as_working": st.counts_as_working}
+                     for st in statuses],
+        "agents": [{"agent_id": a.id, "name": a.name, "employee_code": getattr(a, "employee_code", None),
+                    "worked_s": sum(v for k, v in by_agent[a.id].items() if k in working),
+                    "total_s": sum(by_agent[a.id].values()), "by_status": dict(by_agent[a.id]),
+                    "sessions": list(sessions[a.id].values())} for a in agents],
+    }
+
+
+URL_RE = r"https?://[^\s<>\"')]+"
+
+
+class _ConvRef:
+    """Lo mínimo que app.scope.conversation_visible necesita de una conversación."""
+
+    def __init__(self, group_id, assigned_agent_id):
+        self.group_id, self.assigned_agent_id = group_id, assigned_agent_id
+
+
+@router.get("/reports/links")
+async def links_report(start: date | None = None, end: date | None = None, agent: Agent = Depends(current_agent),
+                       session: AsyncSession = Depends(get_session)):
+    """Enlaces enviados por clientes, asesores y bot (Atom: reporte "Links")."""
+    org = agent.organization_id
+    lo, hi, _tz, start, end = await _range(session, org, start, end)
+    scope = await scope_for(session, agent)
+    sql = """
+        select m.sender_type, (regexp_matches(m.text, :re, 'g'))[1] as url, c.group_id, c.assigned_agent_id
+        from public.messages m join public.conversations c on c.id = m.conversation_id
+        where m.organization_id = :o and m.created_at >= :lo and m.created_at < :hi and m.text ~ 'https?://'
+        limit 20000"""
+    found = await _rows(session, sql, o=org, lo=lo, hi=hi, re=URL_RE)
+    if not scope.unrestricted:
+        found = [r for r in found if conversation_visible(scope, _ConvRef(r["group_id"], r["assigned_agent_id"]))]
+    rows = [(r["sender_type"], r["url"]) for r in found]
+    who = {"contact": "client", "agent": "agent", "bot": "bot", "flow": "bot", "campaign": "campaign"}
+    urls: dict[str, Counter] = defaultdict(Counter)
+    domains: dict[str, Counter] = defaultdict(Counter)
+    for sender, match in rows:
+        url = match.rstrip(".,;:")
+        kind = who.get(sender, "other")
+        urls[url][kind] += 1
+        domains[urlparse(url).netloc.lower().removeprefix("www.")][kind] += 1
+
+    def rows_of(d: dict[str, Counter], key: str) -> list[dict]:
+        out = [{key: k, "total": sum(v.values()), **dict(v)} for k, v in d.items()]
+        return sorted(out, key=lambda x: -x["total"])[:200]
+
+    return {"start": start, "end": end, "total": len(rows), "domains": rows_of(domains, "domain"),
+            "urls": rows_of(urls, "url")}
+
+
 # --- Exportación ----------------------------------------------------------------
 @router.get("/reports/conversations.csv")
 async def export_conversations(start: date | None = None, end: date | None = None,
-                               agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
+                               agent: Agent = Depends(require_permission("exports.conversations")),
+                               session: AsyncSession = Depends(get_session)):
     org = agent.organization_id
     lo, hi, tz, _s, _e = await _range(session, org, start, end)
-    convs = (await session.scalars(select(Conversation).where(
+    c_stmt = select(Conversation).where(
         Conversation.organization_id == org, Conversation.last_message_at >= lo, Conversation.created_at < hi)
-        .order_by(Conversation.id))).unique().all()
+    clause = conversation_clause(await scope_for(session, agent))
+    convs = (await session.scalars((c_stmt if clause is None else c_stmt.where(clause))
+                                   .order_by(Conversation.id))).unique().all()
     fields = list((await fields_by_key(session, org)).values())
 
     def fmt(dt):

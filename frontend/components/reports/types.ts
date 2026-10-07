@@ -13,8 +13,17 @@ export type RealtimeReport = {
     groups: (string | null)[];
     open: number;
     unread: number;
+    /** Estado personalizado y tiempo en él (§18.1); null sin estado asignado. */
+    status?: { key: string; name: string; color: string | null; icon: string | null;
+               receives_conversations: boolean; seconds: number | null } | null;
   }[];
   by_group: Record<string, number>;
+  avg_wait_minutes_now?: number;
+  /** Contadores desde las 00:00 (zona de la empresa). */
+  today?: { incoming: number; handoffs: number; closed: number; attended: number; abandoned: number;
+            avg_first_response_s: number | null };
+  groups?: { group_id: number; name: string; agents: number; online: number; queue: number; open: number;
+             longest_wait_minutes: number }[];
 };
 
 export type GeneralReport = {

@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import current_agent, require_admin
-from app.automations import TYPES
+from app.automations import SLA_TYPES, TYPES, validate_sla
 from app.db import get_session
 from app.models import Agent, Automation, OutboundWebhook
 from app.realtime import PUBLIC_EVENTS
@@ -65,6 +65,8 @@ def _validate(body: AutomationIn) -> None:
         raise HTTPException(422, "Indica las horas de inactividad")
     if body.type == "business_hours" and not c.get("message"):
         raise HTTPException(422, "Indica el mensaje fuera de horario")
+    if body.type in SLA_TYPES and (err := validate_sla(c)):
+        raise HTTPException(422, err)
 
 
 def _to_out(a: Automation) -> AutomationOut:

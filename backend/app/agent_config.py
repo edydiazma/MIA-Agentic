@@ -435,6 +435,15 @@ async def set_stage(session: AsyncSession, conv: Conversation, pipeline: str, ke
     await log_event(session, conv.id, "stage_changed",
                     {"deal_id": deal.id, "pipeline": pipeline, "from": previous, "to": target, "source": source})
     await session.commit()
+    owner = deal.owner_agent_id or conv.assigned_agent_id
+    if owner and owner != agent_id:  # campana del dueño del negocio (nunca falla el cambio de etapa)
+        try:
+            from app.notifications import notify
+
+            await notify(session, owner, "stage", f"Etapa: {target}", f"{deal.name} · {pipeline}",
+                         f"/conversaciones?id={conv.id}", {"deal_id": deal.id, "from": previous, "to": target})
+        except Exception:
+            log.debug("No se pudo notificar el cambio de etapa", exc_info=True)
     return deal
 
 

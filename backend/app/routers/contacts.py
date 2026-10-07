@@ -9,7 +9,9 @@ from pydantic import BaseModel
 from sqlalchemy import delete, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.scope import contact_clause, scope_for
 from app.auth import current_agent
+from app.permissions import require_permission
 from app.db import get_session
 from app.fields import NATIVE_FIELDS, coerce, fields_by_key, set_custom, set_native
 from app.models import (
@@ -55,7 +57,15 @@ async def _contact(session: AsyncSession, contact_id: int, agent: Agent) -> Cont
     c = await session.get(Contact, contact_id)
     if not c or c.organization_id != agent.organization_id:
         raise HTTPException(404, "Contacto no encontrado")
+    clause = contact_clause(await scope_for(session, agent))  # alcance del supervisor / rol (app/scope.py)
+    if clause is not None and not await session.scalar(select(Contact.id).where(Contact.id == c.id, clause)):
+        raise HTTPException(404, "Contacto no encontrado")
     return c
+
+
+async def _scoped(session: AsyncSession, agent: Agent, conds: list) -> list:
+    clause = contact_clause(await scope_for(session, agent))
+    return conds if clause is None else [*conds, clause]
 
 
 async def _reload(session: AsyncSession, c: Contact) -> Contact:
@@ -207,7 +217,7 @@ async def list_contacts(
     agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session),
 ):
     org = agent.organization_id
-    conds = f.where(org)
+    conds = await _scoped(session, agent, f.where(org))
     total = await session.scalar(select(func.count(Contact.id)).where(*conds))
     rows = (await session.scalars(select(Contact).where(*conds).order_by(*f.order_by())
                                   .offset(offset).limit(limit))).all()
@@ -286,13 +296,13 @@ def _cell(row: dict, key: str) -> str:
 @router.get("/export.csv")
 async def export_contacts(
     f: ContactFilters = Depends(), columns: str | None = None,
-    agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session),
+    agent: Agent = Depends(require_permission("exports.contacts")), session: AsyncSession = Depends(get_session),
 ):
     org = agent.organization_id
     available = {c["key"]: c["label"] for c in await _columns(session, org)}
     keys = [k for k in (columns or "").split(",") if k in available] or \
         [k for k, *_rest, visible, _g in BASE_COLUMNS if visible]
-    conds, order = f.where(org), f.order_by()
+    conds, order = await _scoped(session, agent, f.where(org)), f.order_by()
 
     async def generate():
         buf = io.StringIO()

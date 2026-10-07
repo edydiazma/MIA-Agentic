@@ -9,7 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import current_agent, require_admin
+from app.auth import current_agent
+from app.permissions import require_permission
 from app.billing.base import BillingError
 from app.billing.service import apply_event
 from app.billing.stripe import StripeProvider
@@ -44,7 +45,7 @@ async def public_plans(_: Agent = Depends(current_agent), session: AsyncSession 
 
 
 @router.post("/billing/checkout")
-async def checkout(body: CheckoutIn, agent: Agent = Depends(require_admin),
+async def checkout(body: CheckoutIn, agent: Agent = Depends(require_permission("billing.manage")),
                    session: AsyncSession = Depends(get_session)):
     plan = await session.scalar(select(Plan).where(Plan.key == body.plan_key, Plan.is_public))
     if not plan:
@@ -71,7 +72,7 @@ async def checkout(body: CheckoutIn, agent: Agent = Depends(require_admin),
 
 
 @router.post("/billing/portal")
-async def portal(agent: Agent = Depends(require_admin), session: AsyncSession = Depends(get_session)):
+async def portal(agent: Agent = Depends(require_permission("billing.manage")), session: AsyncSession = Depends(get_session)):
     sub = await session.scalar(select(Subscription).where(Subscription.organization_id == agent.organization_id))
     if not sub or not sub.provider_customer_id:
         raise HTTPException(409, "Todavía no tienes una suscripción con medio de pago")

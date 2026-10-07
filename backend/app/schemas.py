@@ -19,6 +19,7 @@ class AgentOut(ORM):
     role: str
     availability: str
     is_active: bool
+    role_id: int | None = None
 
 
 class AgentCreate(BaseModel):
@@ -26,12 +27,15 @@ class AgentCreate(BaseModel):
     name: str
     password: str
     role: str = "agent"
+    role_id: int | None = None  # rol propio (roles); si viene, manda sobre `role`
+    must_change_password: bool = False  # el panel lo marca por defecto al crear con contraseña temporal
     group_ids: list[int] = []
 
 
 class AgentUpdate(BaseModel):
     name: str | None = None
     role: str | None = None
+    role_id: int | None = None
     is_active: bool | None = None
     password: str | None = None
     availability: str | None = None

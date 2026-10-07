@@ -10,7 +10,7 @@ type UserDraft = {
   name: string;
   email: string;
   password: string;
-  role: "admin" | "agent";
+  role: "admin" | "supervisor" | "agent";
   group_ids: number[];
   is_active: boolean;
   availability: Availability;
@@ -224,6 +224,7 @@ export default function UsuariosPage() {
             <Field label="Rol">
               <select value={user.role} onChange={(e) => setUser({ ...user, role: e.target.value as UserDraft["role"] })}>
                 <option value="agent">Asesor</option>
+                <option value="supervisor">Supervisor</option>
                 <option value="admin">Administrador</option>
               </select>
             </Field>

@@ -7,19 +7,18 @@ escribe el cambio, indica el actor con db.set_actor() y relee la conversación.
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import set_actor
 from app.fields import custom_values
 from app.models import (
-    Agent,
-    AgentGroup,
     Alert,
     Channel,
     Contact,
     Conversation,
     ConversationTag,
+    Group,
     Message,
     Tag,
     Typification,
@@ -293,28 +292,20 @@ async def typification_by_name(session: AsyncSession, org: int, name: str | None
 
 
 # --- Asignación y transferencia -------------------------------------------------
-async def pick_agent(session: AsyncSession, org: int, group_id: int | None) -> int | None:
-    """Asesor conectado y disponible con menos conversaciones abiertas (del grupo, si hay)."""
-    online = hub.online_agent_ids()
-    if not online:
-        return None
-    stmt = select(Agent.id).where(Agent.organization_id == org, Agent.is_active, Agent.availability == "available",
-                                  Agent.id.in_(online))
-    if group_id:
-        stmt = stmt.join(AgentGroup, AgentGroup.agent_id == Agent.id).where(AgentGroup.group_id == group_id)
-    candidates = list((await session.scalars(stmt)).all())
-    if not candidates:
-        return None
-    load = dict((await session.execute(
-        select(Conversation.assigned_agent_id, func.count())
-        .where(Conversation.status == "human", Conversation.assigned_agent_id.in_(candidates))
-        .group_by(Conversation.assigned_agent_id))).all())
-    return min(candidates, key=lambda a: (load.get(a, 0), a))
+async def pick_agent(session: AsyncSession, org: int, group_id: int | None, contact_id: int | None = None,
+                     exclude: set[int] | None = None, business_open: bool | None = None) -> int | None:
+    """Asesor para una conversación: estados que reciben conversaciones, estrategia del grupo, dueño / mismo
+    asesor y respaldo fuera de disponibilidad (app.routing)."""
+    from app.routing import pick_agent as _pick
+
+    return await _pick(session, org, group_id, contact_id, exclude, business_open)
 
 
 async def handoff(session: AsyncSession, conv: Conversation, reason: str, group_id: int | None = None,
                   actor: str = "bot") -> None:
-    """Pasa de bot a humano, enruta con IA si hace falta, asigna y avisa."""
+    """Pasa de bot a humano, enruta con IA si hace falta, respeta el horario del grupo, asigna y avisa."""
+    from app import business_hours, routing
+
     await set_actor(session, actor)
     conv.status, conv.handoff_reason = "human", reason
     conv.handoff_at = datetime.now(UTC)
@@ -325,14 +316,24 @@ async def handoff(session: AsyncSession, conv: Conversation, reason: str, group_
         from app.classifier import route_on_handoff  # import diferido: classifier usa este módulo
 
         await route_on_handoff(session, conv)
-    if (await get_setting(session, "conversations", conv.organization_id))["auto_assign"] and not conv.assigned_agent_id:
+    if conv.group_id:  # un grupo solo atiende sus canales: si no, queda en la cola general
+        group = await session.get(Group, conv.group_id)
+        if group is not None and not routing.serves_channel(group, conv.channel_id):
+            conv.group_id = None
+            await system_note(session, conv, f"El grupo «{group.name}» no atiende este canal: queda en la cola general")
+    hours = await business_hours.status(session, conv.organization_id, conv.group_id)
+    assign = hours["open"] or (hours["row"] is not None and hours["row"].assign_anyway)
+    if (assign and (await get_setting(session, "conversations", conv.organization_id))["auto_assign"]
+            and not conv.assigned_agent_id):
         await set_actor(session, "system")
-        conv.assigned_agent_id = await pick_agent(session, conv.organization_id, conv.group_id)
+        conv.assigned_agent_id = await pick_agent(session, conv.organization_id, conv.group_id, conv.contact_id,
+                                                  business_open=hours["open"])
+        await routing.after_assignment(session, conv, conv.assigned_agent_id)
     await commit_and_broadcast(session, conv, "conversation.handoff")
 
-    from app.automations import after_handoff  # evita import circular
-
-    await after_handoff(session, conv)
+    if not hours["open"]:
+        await business_hours.send_out_of_hours(session, conv, hours)
+        await session.commit()
     if actor != "flow":  # un flujo que transfiere no vuelve a disparar flujos de transferencia
         from app.flows.engine import on_event
 
@@ -355,6 +356,8 @@ async def close(session: AsyncSession, conv: Conversation, typification: Typific
         from app.flows.engine import on_event
 
         await on_event(conv.id, "close")
+        if typification:  # «Cuando se tipifica»: secuencias de seguimiento (no se dispara desde un flujo: sin bucles)
+            await on_event(conv.id, "typified")
     __import__("app.quality.hooks", fromlist=["on_close"]).on_close(conv.id)  # QA automático (nunca lanza)
     __import__("app.golden.hooks", fromlist=["on_close"]).on_close(conv.id)  # llaves del cliente (nunca lanza)
 

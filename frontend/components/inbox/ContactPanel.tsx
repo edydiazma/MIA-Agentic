@@ -23,6 +23,7 @@ import FieldHistory from "@/components/fields/FieldHistory";
 import AIAnalysis from "./AIAnalysis";
 import DealsSection from "@/components/crm/DealsSection";
 import ConversationQuality from "@/components/quality/ConversationQuality";
+import ConversationTimeline from "./ConversationTimeline";
 import ConversationOrigin from "@/components/attribution/ConversationOrigin";
 import ContactInsights, { WhatsAppIdentity } from "@/components/clients/ContactInsights";
 import InteractionProducts from "@/components/products/InteractionProducts";
@@ -207,6 +208,7 @@ export default function ContactPanel({
 
       <DealsSection key={contact.id} contact={contact} conversationId={conversation.id} />
       <ConversationQuality conversationId={conversation.id} closed={conversation.status === "closed"} />
+      <ConversationTimeline key={`tl-${conversation.id}`} conversationId={conversation.id} />
 
       <div>
         <h3>Seguimientos</h3>

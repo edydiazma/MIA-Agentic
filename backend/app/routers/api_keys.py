@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_admin
+from app.permissions import require_permission
 from app.db import get_session
 from app.models import Agent, ApiKey, OutboundWebhook, utcnow
 from app.plans import feature_required
@@ -62,12 +62,12 @@ def _scopes(scopes: list[str]) -> list[str]:
 
 
 @router.get("/scopes")
-async def list_scopes(_: Agent = Depends(require_admin)):
+async def list_scopes(_: Agent = Depends(require_permission("api_keys.manage"))):
     return [{"key": k, "label": v} for k, v in SCOPES.items()]
 
 
 @router.get("", response_model=list[KeyOut])
-async def list_keys(agent: Agent = Depends(require_admin), session: AsyncSession = Depends(get_session)):
+async def list_keys(agent: Agent = Depends(require_permission("api_keys.manage")), session: AsyncSession = Depends(get_session)):
     org = agent.organization_id
     keys = (await session.scalars(select(ApiKey).where(ApiKey.organization_id == org)
                                   .order_by(ApiKey.revoked_at.is_not(None), ApiKey.id.desc()))).all()
@@ -81,7 +81,7 @@ async def list_keys(agent: Agent = Depends(require_admin), session: AsyncSession
 
 
 @router.post("", response_model=KeyOut)
-async def create_key(body: KeyIn, agent: Agent = Depends(require_admin), session: AsyncSession = Depends(get_session)):
+async def create_key(body: KeyIn, agent: Agent = Depends(require_permission("api_keys.manage")), session: AsyncSession = Depends(get_session)):
     full, prefix, digest = new_key()
     k = ApiKey(organization_id=agent.organization_id, name=body.name.strip(), prefix=prefix, key_hash=digest,
                scopes=_scopes(body.scopes), rate_limit_per_min=body.rate_limit_per_min, expires_at=body.expires_at,
@@ -92,7 +92,7 @@ async def create_key(body: KeyIn, agent: Agent = Depends(require_admin), session
 
 
 @router.put("/{key_id}", response_model=KeyOut)
-async def update_key(key_id: int, body: KeyIn, agent: Agent = Depends(require_admin),
+async def update_key(key_id: int, body: KeyIn, agent: Agent = Depends(require_permission("api_keys.manage")),
                      session: AsyncSession = Depends(get_session)):
     k = await _get(session, agent.organization_id, key_id)
     k.name, k.scopes = body.name.strip(), _scopes(body.scopes)
@@ -102,7 +102,7 @@ async def update_key(key_id: int, body: KeyIn, agent: Agent = Depends(require_ad
 
 
 @router.post("/{key_id}/rotate", response_model=KeyOut)
-async def rotate_key(key_id: int, agent: Agent = Depends(require_admin), session: AsyncSession = Depends(get_session)):
+async def rotate_key(key_id: int, agent: Agent = Depends(require_permission("api_keys.manage")), session: AsyncSession = Depends(get_session)):
     """Nueva llave con los mismos alcances; la anterior deja de funcionar de inmediato."""
     k = await _get(session, agent.organization_id, key_id)
     if k.revoked_at:
@@ -114,7 +114,7 @@ async def rotate_key(key_id: int, agent: Agent = Depends(require_admin), session
 
 
 @router.post("/{key_id}/revoke", response_model=KeyOut)
-async def revoke_key(key_id: int, agent: Agent = Depends(require_admin), session: AsyncSession = Depends(get_session)):
+async def revoke_key(key_id: int, agent: Agent = Depends(require_permission("api_keys.manage")), session: AsyncSession = Depends(get_session)):
     """Revoca la llave; sus suscripciones de webhooks (Zapier, Make, n8n) se desactivan."""
     from app.webhooks_out import invalidate_cache
 

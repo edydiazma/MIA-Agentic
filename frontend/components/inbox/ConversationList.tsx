@@ -12,6 +12,15 @@ import {
 } from "@/lib/api";
 
 export type Filter = "open" | "unassigned" | "human" | "bot" | "mine" | "closed";
+export type Substate = "new" | "returning" | "reassigned" | "active";
+export type InboxCounts = Partial<Record<Substate | "unassigned" | "mine" | "closed_today", number>>;
+
+export const SUBSTATES: [Substate, string, string][] = [
+  ["new", "Nuevas", "Clientes nuevos sin asesor"],
+  ["returning", "Recurrentes", "Clientes que ya habían escrito antes"],
+  ["reassigned", "Reasignadas", "Pasaron por más de un asesor"],
+  ["active", "Activas", "Con asesor asignado"],
+];
 
 export const FILTERS: [Filter, string][] = [
   ["open", "Abiertas"],
@@ -47,6 +56,9 @@ type Props = {
   onActAs: (id: number | null) => void;
   channel: ChannelProvider | null;
   onChannel: (c: ChannelProvider | null) => void;
+  substate?: Substate | null;
+  onSubstate?: (s: Substate | null) => void;
+  counts?: InboxCounts | null;
 };
 
 export default function ConversationList(p: Props) {
@@ -59,9 +71,28 @@ export default function ConversationList(p: Props) {
           {FILTERS.map(([f, label]) => (
             <button key={f} className={p.filter === f ? "chip active" : "chip"} onClick={() => p.onFilter(f)}>
               {label}
+              {f === "unassigned" && p.counts?.unassigned ? ` (${p.counts.unassigned})` : ""}
+              {f === "mine" && p.counts?.mine ? ` (${p.counts.mine})` : ""}
             </button>
           ))}
         </div>
+        {p.onSubstate && (
+          <div className="chips" role="tablist" aria-label="Sub-estado">
+            {SUBSTATES.map(([s, label, hint]) => (
+              <button
+                key={s}
+                role="tab"
+                aria-selected={p.substate === s}
+                title={hint}
+                className={p.substate === s ? "chip active" : "chip"}
+                onClick={() => p.onSubstate?.(p.substate === s ? null : s)}
+              >
+                {label}
+                {p.counts && p.counts[s] !== undefined ? ` · ${p.counts[s]}` : ""}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="inline" style={{ flexWrap: "nowrap" }}>
           <select
             value={p.groupId ?? ""}

@@ -1,7 +1,10 @@
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import storage, templates
@@ -9,7 +12,20 @@ from app.auth import current_agent
 from app.campaigns import send_template_message
 from app.db import get_session, set_actor
 from app.identity import wa_address
-from app.models import Agent, Channel, Contact, ContactIdentity, Conversation, ConversationTag, Group, Message, Resource, Tag
+from app.models import (
+    Agent,
+    Channel,
+    Contact,
+    ContactIdentity,
+    Conversation,
+    ConversationTag,
+    Group,
+    Message,
+    Organization,
+    Resource,
+    Tag,
+    utcnow,
+)
 from app.schemas import SendText
 from app.service import (
     commit_and_broadcast,
@@ -25,6 +41,7 @@ from app.service import (
     within_session_window,
 )
 from app.service import close as close_conv
+from app.scope import conversation_clause, require_conversation, scope_for
 from app.settings_store import get_setting
 
 router = APIRouter(prefix="/api", tags=["inbox"])
@@ -56,10 +73,8 @@ class ResourceSend(BaseModel):
 
 
 async def _conversation(session: AsyncSession, conv_id: int, agent: Agent) -> Conversation:
-    conv = await get_conversation(session, conv_id, agent.organization_id)
-    if not conv:
-        raise HTTPException(404, "Conversación no encontrada")
-    return conv
+    """La conversación, si existe y está en el alcance del usuario (app/scope.py); si no, 404."""
+    return await require_conversation(session, agent, await get_conversation(session, conv_id, agent.organization_id))
 
 
 def _require_window(conv: Conversation) -> None:
@@ -76,8 +91,28 @@ async def _take(session: AsyncSession, conv: Conversation, agent: Agent) -> None
     """Enviar como asesor implica tomar la conversación (el bot deja de responder)."""
     if conv.status != "human" or conv.assigned_agent_id != agent.id:
         await set_actor(session, "agent", agent.id)
+        first = conv.assigned_agent_id is None
         conv.status, conv.assigned_agent_id = "human", agent.id
+        if first:  # dueño del cliente en la primera asignación (app.routing)
+            from app.routing import after_assignment
+
+            await after_assignment(session, conv, agent.id, "take")
         await commit_and_broadcast(session, conv)
+
+
+SUBSTATES = "^(new|returning|reassigned|active)$"
+
+
+def _substate_clause(substate: str):
+    """Sub-estados de la bandeja (§18.1): nueva, recurrente, reasignada, activa."""
+    if substate == "new":
+        return (Conversation.assigned_agent_id.is_(None)) & (Conversation.is_returning.is_(False)) \
+            & (Conversation.status != "closed")
+    if substate == "returning":
+        return (Conversation.is_returning.is_(True)) & (Conversation.status != "closed")
+    if substate == "reassigned":
+        return (Conversation.assignment_count > 1) & (Conversation.status != "closed")
+    return (Conversation.assigned_agent_id.is_not(None)) & (Conversation.status != "closed")
 
 
 @router.get("/conversations")
@@ -89,12 +124,24 @@ async def list_conversations(
     tag: str | None = None,
     q: str | None = None,
     channel: str | None = Query(default=None, pattern="^(whatsapp_cloud|messenger|instagram|webchat)$"),
+    substate: str | None = Query(default=None, pattern=SUBSTATES),
+    date_from: date | None = None,  # fecha de creación (zona de la empresa)
+    date_to: date | None = None,
+    typification_id: int | None = None,
+    conversation_id: int | None = None,
+    agent: str | None = Query(default=None, alias="agent", max_length=100),  # nombre del asesor
+    group: str | None = Query(default=None, max_length=100),  # nombre del grupo
+    owner_agent_id: int | None = None,
     limit: int = Query(default=100, le=500),
-    agent: Agent = Depends(current_agent),
+    me: Agent = Depends(current_agent),
     session: AsyncSession = Depends(get_session),
 ):
-    org = agent.organization_id
+    org = me.organization_id
+    scope = await scope_for(session, me)
     stmt = select(Conversation).where(Conversation.organization_id == org)
+    clause = conversation_clause(scope)
+    if clause is not None:
+        stmt = stmt.where(clause)
     if status == "open":
         stmt = stmt.where(Conversation.status != "closed")
     elif status == "unassigned":
@@ -102,11 +149,11 @@ async def list_conversations(
     elif status:
         stmt = stmt.where(Conversation.status == status)
     if agent_id is not None:
-        if agent.role not in ("admin", "supervisor") and agent_id != agent.id:
+        if me.role not in ("admin", "supervisor") and agent_id != me.id:
             raise HTTPException(403, "Solo un administrador puede actuar como otro agente")
         stmt = stmt.where(Conversation.assigned_agent_id == agent_id)
     elif mine:
-        stmt = stmt.where(Conversation.assigned_agent_id == agent.id)
+        stmt = stmt.where(Conversation.assigned_agent_id == me.id)
     if group_id:
         stmt = stmt.where(Conversation.group_id == group_id)
     if tag:
@@ -122,8 +169,54 @@ async def list_conversations(
                            or_(ContactIdentity.username.ilike(like), ContactIdentity.external_id.ilike(like)))))
     if channel:
         stmt = stmt.where(exists().where(Channel.id == Conversation.channel_id, Channel.provider == channel))
+    if substate:
+        stmt = stmt.where(_substate_clause(substate))
+    if date_from or date_to:
+        tz = ZoneInfo((await session.get(Organization, org)).timezone)
+        if date_from:
+            stmt = stmt.where(Conversation.created_at >= datetime.combine(date_from, time.min, tz))
+        if date_to:
+            stmt = stmt.where(Conversation.created_at < datetime.combine(date_to + timedelta(days=1), time.min, tz))
+    if typification_id:
+        stmt = stmt.where(Conversation.typification_id == typification_id)
+    if conversation_id:
+        stmt = stmt.where(Conversation.id == conversation_id)
+    if agent:
+        stmt = stmt.where(exists().where(Agent.id == Conversation.assigned_agent_id,
+                                         Agent.name.ilike(f"%{agent.strip()}%")))
+    if group:
+        stmt = stmt.where(exists().where(Group.id == Conversation.group_id, Group.name.ilike(f"%{group.strip()}%")))
+    if owner_agent_id:
+        stmt = stmt.where(exists().where(Contact.id == Conversation.contact_id,
+                                         Contact.owner_agent_id == owner_agent_id))
     stmt = stmt.order_by(Conversation.last_message_at.desc()).limit(limit)
     return [conversation_out(c) for c in (await session.scalars(stmt)).unique().all()]
+
+
+@router.get("/conversations/counts")
+async def conversation_counts(me: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
+    """Contadores de la bandeja dentro del alcance del usuario (pestañas por sub-estado)."""
+    org = me.organization_id
+    scope = await scope_for(session, me)
+    base = [Conversation.organization_id == org]
+    clause = conversation_clause(scope)
+    if clause is not None:
+        base.append(clause)
+    tz = ZoneInfo((await session.get(Organization, org)).timezone)
+    today = datetime.combine(utcnow().astimezone(tz).date(), time.min, tz)
+    open_ = Conversation.status != "closed"
+
+    def n(*conds):
+        return func.count().filter(*conds)
+
+    row = (await session.execute(select(
+        n(_substate_clause("new")), n(_substate_clause("returning")), n(_substate_clause("reassigned")),
+        n(_substate_clause("active")),
+        n(Conversation.status == "human", Conversation.assigned_agent_id.is_(None)),
+        n(open_, Conversation.assigned_agent_id == me.id),
+        n(Conversation.closed_at >= today)).where(*base))).one()
+    keys = ("new", "returning", "reassigned", "active", "unassigned", "mine", "closed_today")
+    return dict(zip(keys, (int(v or 0) for v in row), strict=True))
 
 
 @router.get("/conversations/{conv_id}")
@@ -252,10 +345,19 @@ async def transfer(conv_id: int, body: TransferIn, agent: Agent = Depends(curren
         g = await session.get(Group, body.group_id)
         if not g or g.organization_id != org:
             raise HTTPException(404, "Grupo no encontrado")
+    from app import routing
+
+    source = await session.get(Group, conv.group_id) if conv.group_id else None
+    routing.check_transfer(conv, source, body.group_id, agent.role)  # grupos destino permitidos (§18.1)
     await set_actor(session, "agent", agent.id)
-    conv.status, conv.assigned_agent_id = "human", body.agent_id
+    target_agent = body.agent_id
     if body.group_id is not None:
         conv.group_id = body.group_id or None
+    if not target_agent and body.group_id and (await get_setting(session, "conversations", org))["auto_assign"]:
+        target_agent = await routing.pick_agent(session, org, conv.group_id, conv.contact_id,
+                                                exclude={conv.assigned_agent_id} if conv.assigned_agent_id else None)
+    conv.status, conv.assigned_agent_id = "human", target_agent
+    await routing.after_assignment(session, conv, target_agent, "transfer")
     await system_note(session, conv, f"Transferida por {agent.name}" + (f": {body.note}" if body.note else ""))
     await commit_and_broadcast(session, conv)
     return conversation_out(conv)

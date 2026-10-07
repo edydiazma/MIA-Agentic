@@ -4,14 +4,19 @@ import { useState } from "react";
 import { send, type Automation, type AutomationType, type Group, type Settings } from "@/lib/api";
 import { Badge, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, Toggle, useAction, useApi } from "@/components/ui";
 import { AdminNotice, DAY_LABELS, DaysPicker, TIMEZONES, useIsAdmin } from "@/components/config/common";
+import SlaRuleEditor, { emptySlaConfig, slaSummary, SLA_TYPES } from "@/components/ops/SlaRuleEditor";
 
 const TYPES: Record<AutomationType, { label: string; help: string }> = {
   welcome: { label: "Bienvenida", help: "Envía un mensaje la primera vez que un contacto nuevo escribe; luego responde el bot." },
   keyword_reply: { label: "Respuesta por palabra clave", help: "Si el mensaje contiene una palabra clave, responde un texto fijo y el bot de IA no contesta." },
   keyword_handoff: { label: "Transferir por palabra clave", help: "Si el mensaje contiene una palabra clave, pasa la conversación a un asesor (opcionalmente a un grupo)." },
-  business_hours: { label: "Horario de atención", help: "Si la conversación se transfiere a un asesor fuera del horario, avisa al cliente." },
+  business_hours: { label: "Horario de atención (anterior)", help: "Regla anterior: el horario ahora se configura por grupo en Configuraciones → Horarios de atención (esta regla se migra allí)." },
   inactivity_close: { label: "Cierre por inactividad", help: "Cierra las conversaciones sin mensajes después de X horas (con mensaje opcional)." },
+  sla_agent_no_reply: { label: "SLA: el asesor no responde", help: "Si el asesor asignado no responde al cliente en X minutos: mensaje, reasignar en el grupo, avisar al supervisor…" },
+  sla_client_no_reply: { label: "SLA: el cliente no responde al bot", help: "Si el cliente deja de responder al bot X minutos: transferir, tipificar, cerrar o escribirle." },
+  sla_unassigned: { label: "SLA: en cola sin asesor", help: "Si una conversación transferida sigue sin asesor X minutos: reasignar, avisar o escalar." },
 };
+const isSla = (t: string) => (SLA_TYPES as readonly string[]).includes(t);
 
 type Draft = { id?: number; name: string; type: AutomationType; config: Record<string, any>; enabled: boolean; priority: number };
 
@@ -22,6 +27,9 @@ const emptyConfig = (t: AutomationType, tz: string): Record<string, any> =>
     keyword_handoff: { keywords: [], match: "contains", message: "", group_id: null },
     business_hours: { timezone: tz, days: [0, 1, 2, 3, 4], start: "08:00", end: "18:00", message: "" },
     inactivity_close: { hours: 24, message: "" },
+    sla_agent_no_reply: emptySlaConfig("sla_agent_no_reply"),
+    sla_client_no_reply: emptySlaConfig("sla_client_no_reply"),
+    sla_unassigned: emptySlaConfig("sla_unassigned"),
   })[t];
 
 function summary(a: Automation, groups: Group[]): string {
@@ -39,6 +47,8 @@ function summary(a: Automation, groups: Group[]): string {
       return `${(c.days ?? []).map((d: number) => DAY_LABELS[d]).join(", ")} · ${c.start}–${c.end} (${c.timezone || "zona de la empresa"})`;
     case "inactivity_close":
       return `Tras ${c.hours} h sin mensajes`;
+    default:
+      return isSla(a.type) ? slaSummary(a.type, c, groups) : "";
   }
 }
 
@@ -202,7 +212,11 @@ export default function TareasPage() {
               <input type="number" min={1} value={draft.config.hours ?? 24} onChange={(e) => setCfg("hours", Number(e.target.value))} />
             </Field>
           )}
-          {draft.type !== "keyword_reply" && (
+          {isSla(draft.type) && (
+            <SlaRuleEditor type={draft.type} config={draft.config} groups={groups}
+              onChange={(cfg) => setDraft({ ...draft, config: cfg })} />
+          )}
+          {draft.type !== "keyword_reply" && !isSla(draft.type) && (
             <Field
               label={
                 draft.type === "welcome" ? "Mensaje de bienvenida"

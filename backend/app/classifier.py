@@ -436,6 +436,10 @@ async def classify(session: AsyncSession, conv: Conversation, trigger: str, appl
                                             ctx.call_ids[-1] if ctx.call_ids else None)
         conv.ai_inbound_mark = conv.inbound_count
         await service.commit_and_broadcast(session, conv)
+        if (out["applied"] or {}).get("typification"):  # la IA tipificó al cerrar → «Cuando se tipifica»
+            from app.flows.engine import on_event
+
+            await on_event(conv.id, "typified")
     return out
 
 

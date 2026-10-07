@@ -506,6 +506,62 @@ security rules and time zone.
 - Migration 25b (`20261012001100_appointments_sources.sql`): `appointments.created_by_type` also accepts `api` and
   `webhook` (appointments created by inbound webhooks).
 
+## 18. Contact-center operations, supervision, productivity, security (migrations 26–29)
+
+Closes the Atom gap backlog (`docs/roadmap-atom-gaps.md`).
+
+### 18.1 Contact-center operations (26)
+- `agent_statuses` (per org: name, icon, color, `receives_conversations`, `counts_as_working`, default on login,
+  offline status; system rows available / busy / away / offline seeded for every org by trigger);
+  `agents.status_id`, `status_changed_at`, `employee_code` (`availability` kept for compatibility).
+- `agent_status_events`: one open interval per agent (unique), closed with `duration_s`; source manual / login /
+  logout / idle / system / supervisor → time in current status and the "Login" report. `agent_sessions`: login
+  sessions (heartbeat, end reason, IP, user agent).
+- `business_hours` per group (null = general): time zone, several ranges per weekday (`schedule`), out-of-hours
+  message, `assign_anyway`, `pause_bot`, `inherit_general`; `business_holidays` (org-wide or per group).
+- `groups.transfer_group_ids` (allowed transfer targets), `channel_ids` (channels the group serves), `routing`
+  (`least_loaded | round_robin | sticky_owner | manual`), `max_open_per_agent`, `last_assigned_agent_id`.
+- `contacts.owner_agent_id`, `owner_assigned_at` (client owner → sticky routing; reassigned when the user is
+  deactivated).
+- Automations `sla_agent_no_reply`, `sla_client_no_reply`, `sla_unassigned` (timer → message, reassign within the
+  group, notify supervisor, handoff, typify, close); `automation_runs` with `cycle_key` so a rule fires once per
+  cycle.
+- `conversations.first_assigned_at`, `assigned_at`, `assignment_count`, `is_returning`, `last_agent_message_at`
+  (triggers + backfill) → sub-states NEW / RETURNING / REASSIGNED and AHT.
+
+### 18.2 Supervision and KPIs (27)
+- `agent_groups.role` (`member | supervisor`): a supervisor sees their groups' conversations, agents, dashboard
+  and reports (data scope `groups`).
+- `reporting.daily_service` per day × group × agent: cases, unique contacts, returning cases, bot-only, handoffs,
+  attended, not attended, abandoned, reassigned, closed, AHT (assignment → close) and wait (handoff → first
+  response) sums/counts → attention rate, abandonment rate, AHT, ASA.
+- `reporting.daily_agent_status`: seconds per agent × status × local day (intervals split at midnight).
+
+### 18.3 Agent productivity (28)
+- `quick_replies`: title, category, attachments (`resource_ids`), `group_ids`, active, usage count; variables
+  `{{agent_name}}`, `{{client_name}}`, `{{client_first_name}}`, `{{group_name}}`, `{{company_name}}`.
+- `notifications` (**partitioned**, 6 months; RLS evaluates `auth.uid()` once per query — migration 29b): in-panel bell (assigned, message, mention, follow-up / callback due,
+  SLA breach, transfer, call, QA review, stage); `agents.notification_prefs` (sound, desktop, per type).
+- `followups.kind` (`followup | callback`) and `reminded_at` (due reminders fire once).
+- `campaigns.source` (`client_list` for selections from the client list) and `options` (assign agent / group,
+  bot on/off, continue vs. new conversation, tags); audience `{"contact_ids": [...]}`.
+- Typification-triggered follow-up sequences are flows with the new trigger block "Cuando se tipifica" (no table;
+  migration 28b `20261013000700_flow_triggers.sql` adds `wa_link` and `typified` to `flows.trigger_type`).
+
+### 18.4 Security and roles (29)
+- `roles` per org (system admin / supervisor / agent seeded by trigger + custom): `permissions` (catalog in
+  `app/permissions.py`), `data_scope` (`own | groups | all`), `base_role` for compatibility; `agents.role_id`.
+- `sso_connections` (SAML 2.0 / OIDC: OneLogin, Okta, Azure AD, Google): IdP metadata/certificate or issuer +
+  client (secret in Vault), e-mail domains, JIT provisioning, default role, group claim → role/group mapping,
+  `enforce` (no local password for those domains); `agent_identities` (IdP subject ↔ agent).
+- 2FA: `agents.mfa_method` (`totp | email`), TOTP seed in Vault, recovery code hashes; `mfa_challenges`
+  (intermediate login token, attempts, expiry); `trusted_devices` (device cookie hash; re-ask on new browser/IP).
+- Password policy in `org_settings.security` (min length, complexity, expiry days, history N, lockout attempts,
+  allowed IPs/CIDRs, mandatory 2FA, session timeout); `agents.password_changed_at`, `must_change_password`,
+  `failed_logins`, `locked_until`; `password_history`; `password_resets` (self-service, one-time token).
+- `auth_events` (**partitioned**, 12 months): login ok/failed, lock, MFA, password changes/resets, SSO, IP blocked,
+  role changes, revoked sessions.
+
 ## 11. Feature log (data-model changes)
 
 | Date | Feature | Model change |
@@ -519,6 +575,7 @@ security rules and time zone.
 | 2026-10-07 | Flow engine | No schema changes: uses `flows`, `flow_versions`, `flow_runs` (`context` = variables + resumable execution stack), `flow_run_steps`. Shared block catalog `blocks.json` |
 | 2026-10-08 | Phase 2 (model) | Attribution, CRM, voice and SaaS: migrations 11–14 (section 10) |
 | 2026-10-11 | Public API `/v1` + advisor PWA | Migration 20b: origin `api` (actor and sources) |
+| 2026-10-13 | Contact center, supervision, productivity, security | Migrations 26–29 (§18): agent statuses + status log + sessions, business hours per group + holidays, group routing rules, client owner, SLA automations + runs, conversation assignment fields; supervisor group role, `reporting.daily_service`, `daily_agent_status`; quick replies v2, `notifications` (partitioned), follow-up reminders, client-list campaigns; roles & permissions, SSO, 2FA, password policy/history/resets, `auth_events` (partitioned) |
 | 2026-10-12 | Agent config, stages, recovery, security, inbound webhooks | Migration 25 (§17): `ai_agents` ad context / source rules / cost optimization / security / recovery / time zone / fields; `pipeline_stages`, `deal_stage_events`; richer `typifications`; `inbound_webhooks`, `inbound_webhook_runs` (partitioned) |
 | 2026-10-12 | Ad-level tracking | Migration 24 (§16): creative/post on `attributions` and touches; `ad_entities` creative + story id; `contacts.first_source_*`/`last_source_*` (trigger); `ad_spend_daily`; `reporting.daily_ads` |
 | 2026-10-12 | Golden record (identification keys) | Migration 23 (§15): `golden_key_types`, `contact_keys`, `contact_golden` (trigger), `contact_vehicles`, `key_extractions`, `contact_merge_candidates`; `deals.vehicle_id/origin/attributes/interest_level`; field organization on `contact_fields` (section, scope, pipeline, maps_to, aliases, show_in_card); `contact_consents`; `reporting.v_golden_coverage`, `v_contact_consents` |

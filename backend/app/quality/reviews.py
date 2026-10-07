@@ -295,6 +295,15 @@ async def review_with_ai(session: AsyncSession, conv: Conversation, sc: QAScorec
         await _coaching(session, review, suggestions)
         await finalize(session, conv)
     await session.commit()
+    if review.status == "done" and review.agent_id:  # campana del asesor evaluado (nunca falla la revisión)
+        try:
+            from app.notifications import notify
+
+            await notify(session, review.agent_id, "qa_review", "Nueva revisión de calidad",
+                         f"Puntaje {review.total_score:.0f}/100" if review.total_score is not None else None,
+                         "/coaching", {"review_id": review.id, "conversation_id": conv.id})
+        except Exception:
+            log.debug("No se pudo notificar la revisión QA", exc_info=True)
     return review
 
 

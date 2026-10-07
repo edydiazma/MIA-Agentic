@@ -17,6 +17,8 @@ import { Badge, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, useApi
 import { SourceCell, type SourceFields } from "@/components/ads/SourceLine";
 import { MATCHED_ON_LABEL, looksLikeKey, type GoldenSearchHit } from "@/lib/golden-types";
 import ContactDetail from "@/components/clients/ContactDetail";
+import { SendTemplateModal, StartConversationModal } from "@/components/clients/OutreachModals";
+import { useMe } from "@/components/Shell";
 import { ImportModal, NewContactModal } from "@/components/clients/ContactModals";
 import {
   FALLBACK_COLUMNS,
@@ -120,6 +122,12 @@ export default function ClientesPage() {
   const [offset, setOffset] = useState(0);
   const [modal, setModal] = useState<"new" | "import" | "columns" | null>(null);
   const [detail, setDetail] = useState<number | null>(null);
+  // Selección para acciones masivas: ids marcados o «todos los del filtro»
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [allMatching, setAllMatching] = useState(false);
+  const [outreach, setOutreach] = useState<"template" | "start" | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const me = useMe();
   const [visible, setVisible] = useState<string[] | null>(null);
 
   const columnsApi = useApi<ColumnDef[]>("/api/contacts/columns");
@@ -155,7 +163,35 @@ export default function ClientesPage() {
   function set<K extends keyof Filters>(k: K, v: Filters[K]) {
     setFilters((f) => ({ ...f, [k]: v }));
     setOffset(0);
+    setSelected(new Set());
+    setAllMatching(false);
   }
+  const pageIds = (list.data?.items ?? []).map((r) => r.id);
+  const pageAllSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
+  const selectionCount = allMatching ? total : selected.size;
+  function toggle(id: number) {
+    setAllMatching(false);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function togglePage() {
+    setAllMatching(false);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      pageIds.forEach((id) => (pageAllSelected ? next.delete(id) : next.add(id)));
+      return next;
+    });
+  }
+  const singleSelected = !allMatching && selected.size === 1
+    ? (list.data?.items ?? []).find((r) => selected.has(r.id)) ?? null
+    : null;
+  const selectionFilter = Object.fromEntries(
+    Object.entries(params).filter(([, v]) => v !== "" && v !== undefined && String(v) !== "false"),
+  ) as Record<string, string | number | boolean>;
   const extraCount = (Object.keys(filters) as (keyof Filters)[]).filter((k) => {
     if (BASIC_FILTERS.includes(k)) return false;
     const v = filters[k];
@@ -199,6 +235,12 @@ export default function ClientesPage() {
           </>
         }
       />
+      {notice && (
+        <div className="notice row" role="status" style={{ marginBottom: 8 }}>
+          <span>{notice}</span>
+          <button className="link small" onClick={() => setNotice(null)}>Cerrar</button>
+        </div>
+      )}
       <Card>
         <div className="inline filters" style={{ marginBottom: 8 }}>
           <input
@@ -358,9 +400,33 @@ export default function ClientesPage() {
           <Empty>No hay clientes con esos filtros.</Empty>
         ) : (
           <div className="table-wrap">
+            {selectionCount > 0 && (
+              <div className="sel-bar" role="region" aria-label="Clientes seleccionados">
+                <strong>{selectionCount.toLocaleString("es")} seleccionado{selectionCount === 1 ? "" : "s"}</strong>
+                {!allMatching && pageAllSelected && total > pageIds.length && (
+                  <button className="link small" onClick={() => setAllMatching(true)}>
+                    Seleccionar los {total.toLocaleString("es")} del filtro
+                  </button>
+                )}
+                <button className="primary" onClick={() => setOutreach("template")}>
+                  Enviar plantilla
+                </button>
+                <button disabled={!singleSelected} title={singleSelected ? undefined : "Selecciona un solo cliente"}
+                  onClick={() => setOutreach("start")}>
+                  Iniciar conversación
+                </button>
+                <button className="link small" onClick={() => { setSelected(new Set()); setAllMatching(false); }}>
+                  Quitar selección
+                </button>
+              </div>
+            )}
             <table className="table">
               <thead>
                 <tr>
+                  <th style={{ width: 32 }}>
+                    <input type="checkbox" aria-label="Seleccionar la página" checked={pageAllSelected || allMatching}
+                      onChange={togglePage} />
+                  </th>
                   {cols.map((c) => {
                     const active = sort.key === c.key;
                     return (
@@ -389,6 +455,10 @@ export default function ClientesPage() {
               <tbody>
                 {list.data.items.map((row) => (
                   <tr key={row.id} className="clickable" onClick={() => setDetail(row.id)}>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" aria-label={`Seleccionar ${row.name ?? row.id}`}
+                        checked={allMatching || selected.has(row.id)} onChange={() => toggle(row.id)} />
+                    </td>
                     {cols.map((c) => (
                       <td
                         key={c.key}
@@ -450,6 +520,28 @@ export default function ClientesPage() {
             list.reload();
             tags.reload();
           }}
+        />
+      )}
+      {outreach === "template" && (
+        <SendTemplateModal
+          contactIds={allMatching ? null : [...selected]}
+          filter={allMatching ? selectionFilter : null}
+          count={selectionCount}
+          meId={me?.id ?? null}
+          onClose={() => setOutreach(null)}
+          onDone={(r) => {
+            setOutreach(null);
+            setSelected(new Set());
+            setAllMatching(false);
+            setNotice(`Campaña creada: enviando a ${r.recipients.toLocaleString("es")} clientes. Revisa el avance en Campañas.`);
+          }}
+        />
+      )}
+      {outreach === "start" && singleSelected && (
+        <StartConversationModal
+          contactId={singleSelected.id}
+          contactName={singleSelected.name ?? "el cliente"}
+          onClose={() => setOutreach(null)}
         />
       )}
       {detail !== null && (

@@ -19,3 +19,5 @@ websockets>=13
 sentry-sdk>=2.18
 # App del asesor (PWA): Web Push con VAPID
 pywebpush>=2.0
+# SSO SAML 2.0: verificación de firmas XML (lxml + cryptography)
+signxml>=4.0

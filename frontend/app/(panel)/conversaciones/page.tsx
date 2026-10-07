@@ -17,7 +17,7 @@ import { useMe } from "@/components/Shell";
 import { useApi } from "@/components/ui";
 import Chat from "@/components/inbox/Chat";
 import ContactPanel from "@/components/inbox/ContactPanel";
-import ConversationList, { type Filter } from "@/components/inbox/ConversationList";
+import ConversationList, { type Filter, type InboxCounts, type Substate } from "@/components/inbox/ConversationList";
 import styles from "@/components/inbox/inbox.module.css";
 
 function Inbox() {
@@ -28,6 +28,8 @@ function Inbox() {
   const params = useSearchParams();
 
   const [filter, setFilter] = useState<Filter>("open");
+  const [substate, setSubstate] = useState<Substate | null>(null);
+  const [counts, setCounts] = useState<InboxCounts | null>(null);
   const [query, setQuery] = useState("");
   const [groupId, setGroupId] = useState<number | null>(null);
   const [actAs, setActAs] = useState<number | null>(null);
@@ -56,8 +58,28 @@ function Inbox() {
       group_id: groupId ?? undefined,
       q: query.trim() || undefined,
       channel: channel ?? undefined,
+      substate: substate ?? undefined,
     })}`;
-  }, [filter, actAs, groupId, query, channel]);
+  }, [filter, actAs, groupId, query, channel, substate]);
+
+  // Contadores por sub-estado (Nuevas / Recurrentes / Reasignadas / Activas); sin endpoint, sin contadores
+  const loadCounts = useCallback(() => {
+    api<InboxCounts>("/api/conversations/counts").then(setCounts).catch(() => setCounts(null));
+  }, []);
+  useEffect(() => {
+    loadCounts();
+    const t = setInterval(loadCounts, 30000);
+    return () => clearInterval(t);
+  }, [loadCounts]);
+  const shownIds = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    shownIds.current = new Set(conversations.map((c) => c.id));
+  }, [conversations]);
+  const countsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshCountsSoon = useCallback(() => {
+    if (countsTimer.current) clearTimeout(countsTimer.current);
+    countsTimer.current = setTimeout(loadCounts, 1500);
+  }, [loadCounts]);
 
   const loadList = useCallback(async () => {
     setConversations(await api<Conversation[]>(listPath));
@@ -71,6 +93,8 @@ function Inbox() {
   // ¿La conversación pertenece a la vista actual? (para actualizaciones en tiempo real)
   const matches = useCallback(
     (c: Conversation) => {
+      // Con sub-estado solo se actualizan las que ya se ven (el servidor decide quién entra)
+      if (substate && !shownIds.current.has(c.id)) return false;
       if (groupId && c.group?.id !== groupId) return false;
       if (channel && c.channel_provider !== channel) return false;
       const owner = actAs ?? (filter === "mine" ? me?.id : undefined);
@@ -92,7 +116,7 @@ function Inbox() {
           return true;
       }
     },
-    [filter, groupId, actAs, query, channel, me?.id],
+    [filter, groupId, actAs, query, channel, me?.id, substate],
   );
 
   const upsertConversation = useCallback(
@@ -135,6 +159,7 @@ function Inbox() {
   }, []);
 
   useRealtime((event, data) => {
+    if (event.startsWith("conversation.")) refreshCountsSoon();
     if (event === "message.new") {
       const m = data as Message;
       upsertMessage(m);
@@ -178,6 +203,9 @@ function Inbox() {
           onActAs={setActAs}
           channel={channel}
           onChannel={setChannel}
+          substate={substate}
+          onSubstate={setSubstate}
+          counts={counts}
         />
         {selected ? (
           <>

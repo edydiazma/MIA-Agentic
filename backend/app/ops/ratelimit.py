@@ -59,3 +59,17 @@ def per_ip(scope: str, limit: int, window_s: int = 60):
     async def dependency(request: Request) -> None:
         await enforce(None, f"ip:{client_ip(request)}:{scope}", limit, window_s, scope)
     return dependency
+
+
+async def peek(bucket: str, window_s: int) -> int:
+    """Golpes en la ventana actual sin sumar uno (p. ej. intentos fallidos acumulados)."""
+    from app.db import engine
+
+    try:
+        async with engine.connect() as conn:
+            return int(await conn.scalar(text(
+                "select coalesce((select hits from public.rate_limit_counters where bucket = :b and window_start = "
+                "to_timestamp(floor(extract(epoch from now()) / :w) * :w)), 0)"), {"b": bucket[:200], "w": int(window_s)}))
+    except Exception:
+        log.warning("Límite de uso no disponible para %s", bucket, exc_info=True)
+        return 0

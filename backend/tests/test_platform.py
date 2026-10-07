@@ -16,7 +16,7 @@ async def test_groups_and_auto_assign(client, monkeypatch):
     c = client
     g = (await c.post("/api/groups", json={"name": "Ventas"})).json()
     a = (await c.post("/api/agents", json={
-        "email": "luis@test.com", "name": "Luis", "password": "12345678", "group_ids": [g["id"]]})).json()
+        "email": "luis@test.com", "name": "Luis", "password": "Asesor-Clave-2026", "group_ids": [g["id"]]})).json()
     assert a["group_ids"] == [g["id"]]
     monkeypatch.setattr(hub, "online_agent_ids", lambda organization_id=None: {a["id"]})
 

@@ -13,8 +13,8 @@ import {
   type Agent,
   type Conversation,
   type Message,
-  type QuickReply,
 } from "@/lib/api";
+import type { QuickReplyV2 } from "@/lib/productivity-types";
 import { useApi } from "@/components/ui";
 import { CloseModal, ResourceModal, TemplateModal, TransferModal } from "./modals";
 import ConversationTags from "./ConversationTags";
@@ -101,7 +101,10 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
   const [sugIndex, setSugIndex] = useState(0);
   const bottom = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const quick = useApi<QuickReply[]>("/api/quick-replies");
+  // Respuestas rápidas disponibles para el grupo de esta conversación, con variables ya resueltas
+  const quick = useApi<QuickReplyV2[]>(`/api/quick-replies?conversation_id=${c.id}`);
+  const [picked, setPicked] = useState<QuickReplyV2 | null>(null);
+  const [noteMode, setNoteMode] = useState(false);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "end" });
@@ -109,6 +112,8 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
   useEffect(() => {
     setError(null);
     setText("");
+    setPicked(null);
+    setNoteMode(false);
   }, [c.id]);
 
   // Ventana de respuesta libre de un asesor: WhatsApp 24 h; Messenger e Instagram 7 días (HUMAN_AGENT); chat web siempre
@@ -118,7 +123,14 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
     windowMs === Infinity || (!!c.last_inbound_at && Date.now() - new Date(c.last_inbound_at).getTime() < windowMs);
 
   const slash = text.startsWith("/") && !text.includes(" ") ? text.slice(1).toLowerCase() : null;
-  const suggestions = slash === null ? [] : (quick.data ?? []).filter((q) => q.shortcut.includes(slash)).slice(0, 8);
+  const suggestions =
+    slash === null
+      ? []
+      : (quick.data ?? [])
+          .filter((q) =>
+            [q.shortcut, q.title ?? "", q.category ?? ""].some((v) => v.toLowerCase().includes(slash)),
+          )
+          .slice(0, 8);
 
   async function run(fn: () => Promise<unknown>) {
     setBusy(true);
@@ -137,8 +149,19 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
     const body = text.trim();
     if (!body) return;
     await run(async () => {
-      onMessage(await send<Message>(`/api/conversations/${c.id}/messages`, "POST", { text: body }));
+      if (noteMode) {
+        const r = await send<{ message: Message }>(`/api/conversations/${c.id}/notes`, "POST", { text: body });
+        onMessage(r.message);
+      } else if (picked) {
+        // Respuesta rápida: envía el texto (editado o no) y sus adjuntos; cuenta el uso
+        const r = await send<{ messages: Message[] }>(
+          `/api/conversations/${c.id}/quick-replies/${picked.id}/send`, "POST", { text: body });
+        r.messages.forEach(onMessage);
+      } else {
+        onMessage(await send<Message>(`/api/conversations/${c.id}/messages`, "POST", { text: body }));
+      }
       setText("");
+      setPicked(null);
     });
   }
 
@@ -155,8 +178,9 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
   const action = (path: string) =>
     run(async () => onConversation(await send<Conversation>(`/api/conversations/${c.id}/${path}`, "POST")));
 
-  function pickSuggestion(q: QuickReply) {
-    setText(q.text);
+  function pickSuggestion(q: QuickReplyV2) {
+    setText(q.rendered);
+    setPicked(q);
     setSugIndex(0);
   }
 
@@ -230,7 +254,15 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
           </div>
         )
       ) : (
-        <form className="composer" onSubmit={sendText}>
+        <form className={`composer${noteMode ? " note" : ""}`} onSubmit={sendText}>
+          {picked && picked.attachments.length > 0 && !noteMode && (
+            <div className="small muted" style={{ width: "100%" }}>
+              Se enviará con: {picked.attachments.map((a) => `📎 ${a.name}`).join(", ")}{" "}
+              <button type="button" className="link small" onClick={() => setPicked(null)}>
+                Quitar
+              </button>
+            </div>
+          )}
           {suggestions.length > 0 && (
             <div className="suggestions" role="listbox">
               {suggestions.map((q, i) => (
@@ -243,7 +275,15 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
                     pickSuggestion(q);
                   }}
                 >
-                  <strong>/{q.shortcut}</strong> <span className="muted">{q.text.slice(0, 90)}</span>
+                  <span className="qr-pick">
+                    {q.category && <span className="qr-cat">{q.category}</span>}
+                    <span>
+                      <strong>/{q.shortcut}</strong>
+                      {q.title && <span> · {q.title}</span>}
+                      {q.attachments.length > 0 && <span className="muted"> · 📎 {q.attachments.length}</span>}
+                    </span>
+                    <span className="muted">{q.rendered.slice(0, 120)}</span>
+                  </span>
                 </button>
               ))}
             </div>
@@ -259,6 +299,15 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
               Plantilla
             </button>
           )}
+          <button
+            type="button"
+            title="Nota interna: solo la ve tu equipo; escribe @nombre para avisarle a un compañero"
+            aria-pressed={noteMode}
+            className={noteMode ? "primary" : ""}
+            onClick={() => setNoteMode((v) => !v)}
+          >
+            📝 Nota
+          </button>
           <input
             ref={fileInput}
             type="file"
@@ -273,13 +322,16 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
             value={text}
             rows={1}
             placeholder={
-              c.status === "bot"
-                ? "Escribir aquí toma la conversación y pausa al bot… ( / para respuestas rápidas)"
-                : "Escribe un mensaje ( / para respuestas rápidas)"
+              noteMode
+                ? "Nota interna (no se envía al cliente). @nombre avisa a un compañero"
+                : c.status === "bot"
+                  ? "Escribir aquí toma la conversación y pausa al bot… ( / para respuestas rápidas)"
+                  : "Escribe un mensaje ( / para respuestas rápidas)"
             }
             onChange={(e) => {
               setText(e.target.value);
               setSugIndex(0);
+              if (!e.target.value) setPicked(null);
             }}
             onKeyDown={(e) => {
               if (suggestions.length) {
@@ -306,7 +358,7 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
             }}
           />
           <button className="primary" disabled={busy || !text.trim()}>
-            Enviar
+            {noteMode ? "Guardar nota" : "Enviar"}
           </button>
         </form>
       )}

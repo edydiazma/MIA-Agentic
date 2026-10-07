@@ -102,6 +102,25 @@ class Hub:
 
             self._spawn(deliver(event, data, organization_id=organization_id))
         self._spawn(self._push(event, data, organization_id))
+        self._spawn(self._panel_notify(event, data, organization_id))
+
+    async def send_to_agent(self, organization_id: int, agent_id: int, event: str, data: dict) -> None:
+        """Evento privado de un asesor (p. ej. notification.new): solo a sus sockets, en cualquier réplica."""
+        payload = json.dumps({"event": event, "data": data}, default=str)
+        await self._deliver_local(organization_id, payload, agent_id)
+        if self.mode == "pg":
+            await self._notify({"o": self.origin, "org": organization_id, "a": agent_id, "p": payload})
+
+    async def _panel_notify(self, event: str, data: dict, organization_id: int) -> None:
+        """Campana del panel (app/notifications.py): una vez por evento, en la réplica que publica."""
+        try:
+            from app.notifications import on_event
+        except (ImportError, AttributeError):
+            return
+        try:
+            await on_event(event, data, organization_id)
+        except Exception:
+            log.exception("Notificación del panel falló para %s", event)
 
     async def _push(self, event: str, data: dict, organization_id: int) -> None:
         try:
@@ -113,9 +132,9 @@ class Hub:
         except Exception:
             log.exception("Notificación push falló para %s", event)
 
-    async def _deliver_local(self, organization_id: int, payload: str) -> None:
-        for ws, (org, _agent) in list(self.sockets.items()):
-            if org != organization_id:
+    async def _deliver_local(self, organization_id: int, payload: str, agent_id: int | None = None) -> None:
+        for ws, (org, agent) in list(self.sockets.items()):
+            if org != organization_id or (agent_id is not None and agent != agent_id):
                 continue
             try:
                 await ws.send_text(payload)
@@ -166,7 +185,7 @@ class Hub:
                 self.remote[msg["o"]] = (time.monotonic(), {(int(o), int(a)) for o, a in msg.get("pairs") or []})
                 return
             metrics.realtime_received.inc()
-            await self._deliver_local(int(msg["org"]), msg["p"])
+            await self._deliver_local(int(msg["org"]), msg["p"], int(msg["a"]) if msg.get("a") is not None else None)
         except Exception:
             metrics.realtime_errors.inc("receive")
             log.exception("Evento en vivo inválido")

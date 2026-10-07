@@ -68,6 +68,31 @@ DEFAULTS: dict[str, dict] = {
         "opportunity_days": 30,
         "followup_on_opportunity": True,
     },
+    # Seguridad de acceso (app/security/policy.py). Solo se edita por /api/security/policy (permiso security.manage).
+    "security": {
+        "min_length": 10,
+        "require_upper": True,
+        "require_lower": True,
+        "require_digit": True,
+        "require_symbol": False,
+        "expiry_days": 0,  # 0 = la contraseña no vence
+        "history": 5,  # no se pueden repetir las últimas N
+        "lockout_attempts": 5,
+        "lockout_minutes": 15,
+        "allowed_ips": [],  # CIDR; vacío = cualquier IP
+        "mfa_required": "none",  # none | admins | all
+        "trusted_device_days": 30,
+        "session_timeout_minutes": 720,
+        "breached_check": False,  # consulta k-anónima a Have I Been Pwned al cambiar la contraseña
+    },
+    # Enrutamiento y operación del contact center (§18.1)
+    "routing": {
+        "sticky_agent": True,  # reasignar al mismo asesor que atendió antes si está disponible
+        "owner_on_first_assignment": True,  # el primer asesor asignado queda como dueño del cliente
+        "assign_when_none_available": False,  # en horario, si nadie está disponible, asigna a un integrante no disponible
+        "session_timeout_minutes": 15,  # sin latido del panel → sesión cerrada y estado desconectado
+        "offline_grace_seconds": 120,  # tras cerrar la última pestaña, espera antes de marcar desconectado
+    },
     "appointments": {
         "enabled": False,
         "title": "Cita",

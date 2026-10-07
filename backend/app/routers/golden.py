@@ -25,7 +25,7 @@ from app.golden.fields import (
     load_preset,
     validate_proposal,
 )
-from app.golden.keys import GoldenError, can_see_sensitive, key_types, mask, refresh_golden, upsert_key
+from app.golden.keys import GoldenError, key_types, mask, refresh_golden, upsert_key
 from app.golden.records import VEHICLE_FIELDS, RecordError, record_consent, upsert_vehicle
 from app.models import (
     Agent,
@@ -54,7 +54,13 @@ async def _contact(session: AsyncSession, contact_id: int, agent: Agent) -> Cont
 
 
 async def _sees(session: AsyncSession, agent: Agent) -> bool:
-    return can_see_sensitive(agent, await get_setting(session, "golden", agent.organization_id))
+    """Permiso «data.sensitive.view» (rol) o el ajuste de la empresa que lo abre a todos los asesores."""
+    from app.permissions import has_permission
+
+    if await has_permission(session, agent, "data.sensitive.view"):
+        return True
+    settings = await get_setting(session, "golden", agent.organization_id)
+    return bool(settings.get("agents_see_sensitive"))
 
 
 # --- Tipos de llave ----------------------------------------------------------------------------------

@@ -90,6 +90,20 @@ class Agent(Base):
     last_seen_at: Mapped[datetime | None] = ts(nullable=True)
     created_at: Mapped[datetime] = ts(default=utcnow)
     updated_at: Mapped[datetime] = ts(default=utcnow)
+    # Contact center (migración 26), notificaciones (28), seguridad (29) — §18
+    status_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK agent_statuses
+    status_changed_at: Mapped[datetime | None] = ts(nullable=True)
+    employee_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notification_prefs: Mapped[dict] = mapped_column(JSONB, default=dict)
+    role_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK roles
+    mfa_method: Mapped[str | None] = mapped_column(Text, nullable=True)  # totp | email
+    mfa_secret_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    mfa_enabled_at: Mapped[datetime | None] = ts(nullable=True)
+    mfa_recovery_hashes: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    password_changed_at: Mapped[datetime | None] = ts(nullable=True)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    failed_logins: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = ts(nullable=True)
 
 
 class Group(Base):
@@ -101,6 +115,11 @@ class Group(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)  # también criterio de enrutamiento IA
     created_at: Mapped[datetime] = ts(default=utcnow)
     updated_at: Mapped[datetime] = ts(default=utcnow)
+    transfer_group_ids: Mapped[list[int] | None] = mapped_column(ARRAY(BigInteger), nullable=True)  # null = cualquiera
+    channel_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
+    routing: Mapped[str] = mapped_column(Text, default="least_loaded")  # least_loaded|round_robin|sticky_owner|manual
+    max_open_per_agent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_assigned_agent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class AgentGroup(Base):
@@ -108,6 +127,7 @@ class AgentGroup(Base):
 
     agent_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("agents.id", ondelete="CASCADE"), primary_key=True)
     group_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True)
+    role: Mapped[str] = mapped_column(Text, default="member")  # member | supervisor
 
 
 class OrgSetting(Base):
@@ -231,6 +251,8 @@ class Contact(Base):
     last_source_label: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_source_at: Mapped[datetime | None] = ts(nullable=True)
     last_attribution_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    owner_agent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK agents (dueño del cliente)
+    owner_assigned_at: Mapped[datetime | None] = ts(nullable=True)
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     email: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -402,6 +424,11 @@ class Conversation(Base):
     recovery_attempts_sent: Mapped[int] = mapped_column(SmallInteger, default=0)
     last_recovery_at: Mapped[datetime | None] = ts(nullable=True)
     security_flag: Mapped[str | None] = mapped_column(Text, nullable=True)  # spam | abuse | phishing
+    first_assigned_at: Mapped[datetime | None] = ts(nullable=True)
+    assigned_at: Mapped[datetime | None] = ts(nullable=True)
+    assignment_count: Mapped[int] = mapped_column(Integer, default=0)
+    is_returning: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_agent_message_at: Mapped[datetime | None] = ts(nullable=True)
     ai_typification_id: Mapped[int | None] = fk("typifications.id")
     ai_classified_at: Mapped[datetime | None] = ts(nullable=True)
     ai_inbound_mark: Mapped[int] = mapped_column(Integer, default=0)
@@ -804,6 +831,8 @@ class Campaign(Base):
     created_at: Mapped[datetime] = ts(default=utcnow)
     started_at: Mapped[datetime | None] = ts(nullable=True)
     finished_at: Mapped[datetime | None] = ts(nullable=True)
+    source: Mapped[str] = mapped_column(Text, default="campaigns")  # campaigns | client_list | api | webhook
+    options: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 
 class CampaignRecipient(Base):
@@ -933,6 +962,8 @@ class FollowUp(Base):
     note: Mapped[str] = mapped_column(Text)
     done_at: Mapped[datetime | None] = ts(nullable=True)
     created_at: Mapped[datetime] = ts(default=utcnow)
+    kind: Mapped[str] = mapped_column(Text, default="followup")  # followup | callback
+    reminded_at: Mapped[datetime | None] = ts(nullable=True)
 
     contact: Mapped[Contact] = relationship(lazy="joined")
     agent: Mapped[Agent] = relationship(lazy="joined")
@@ -966,6 +997,14 @@ class QuickReply(Base):
     organization_id: Mapped[int] = org_fk()
     shortcut: Mapped[str] = mapped_column(Text)
     text: Mapped[str] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resource_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
+    group_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    usage_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    updated_at: Mapped[datetime] = ts(default=utcnow)
 
 
 class Resource(Base):
@@ -2192,3 +2231,231 @@ class InboundWebhookRun(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ip: Mapped[str | None] = mapped_column(Text, nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# =============================================================================
+# Contact center, supervisión, productividad y seguridad (migraciones 26–29). docs/data-model.md §18
+# =============================================================================
+class AgentStatus(Base):
+    __tablename__ = "agent_statuses"
+    __table_args__ = (UniqueConstraint("organization_id", "key"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    key: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(Text)
+    icon: Mapped[str | None] = mapped_column(Text, nullable=True)
+    color: Mapped[str | None] = mapped_column(Text, nullable=True)
+    receives_conversations: Mapped[bool] = mapped_column(Boolean, default=False)
+    counts_as_working: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_offline: Mapped[bool] = mapped_column(Boolean, default=False)
+    position: Mapped[int] = mapped_column(Integer, default=100)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class AgentStatusEvent(Base):
+    __tablename__ = "agent_status_events"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    agent_id: Mapped[int] = mapped_column(BigInteger)  # FK en la base
+    status_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    status_key: Mapped[str] = mapped_column(Text)
+    started_at: Mapped[datetime] = ts(default=utcnow)
+    ended_at: Mapped[datetime | None] = ts(nullable=True)
+    duration_s: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source: Mapped[str] = mapped_column(Text, default="manual")  # manual|login|logout|idle|system|supervisor
+
+
+class AgentSession(Base):
+    __tablename__ = "agent_sessions"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    agent_id: Mapped[int] = mapped_column(BigInteger)
+    started_at: Mapped[datetime] = ts(default=utcnow)
+    last_seen_at: Mapped[datetime] = ts(default=utcnow)
+    ended_at: Mapped[datetime | None] = ts(nullable=True)
+    end_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ip: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class BusinessHours(Base):
+    __tablename__ = "business_hours"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    group_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # null = general
+    timezone: Mapped[str] = mapped_column(Text, default="America/Bogota")
+    schedule: Mapped[dict] = mapped_column(JSONB, default=dict)  # {"mon": [{"from","to"}], ...}
+    out_of_hours_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assign_anyway: Mapped[bool] = mapped_column(Boolean, default=False)
+    pause_bot: Mapped[bool] = mapped_column(Boolean, default=False)
+    inherit_general: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class BusinessHoliday(Base):
+    __tablename__ = "business_holidays"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    day: Mapped[date] = mapped_column(Date)
+    name: Mapped[str] = mapped_column(Text)
+    group_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class AutomationRun(Base):
+    __tablename__ = "automation_runs"
+    __table_args__ = (UniqueConstraint("automation_id", "conversation_id", "cycle_key"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    automation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("automations.id", ondelete="CASCADE"))
+    conversation_id: Mapped[int] = mapped_column(BigInteger)  # FK en la base
+    cycle_key: Mapped[str] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text)
+    result: Mapped[dict] = mapped_column(JSONB, default=dict)
+    fired_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class Notification(Base):
+    """Particionada: PK (id, created_at)."""
+
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    organization_id: Mapped[int] = mapped_column(BigInteger)
+    agent_id: Mapped[int] = mapped_column(BigInteger)
+    type: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    link: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data: Mapped[dict] = mapped_column(JSONB, default=dict)
+    read_at: Mapped[datetime | None] = ts(nullable=True)
+
+
+class Role(Base):
+    __tablename__ = "roles"
+    __table_args__ = (UniqueConstraint("organization_id", "key"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    key: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    base_role: Mapped[str] = mapped_column(Text, default="agent")
+    permissions: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    data_scope: Mapped[str] = mapped_column(Text, default="own")  # own | groups | all
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class SSOConnection(Base):
+    __tablename__ = "sso_connections"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    protocol: Mapped[str] = mapped_column(Text)  # saml | oidc
+    name: Mapped[str] = mapped_column(Text)
+    slug: Mapped[str] = mapped_column(Text, unique=True)
+    idp_entity_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    idp_sso_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    idp_certificate: Mapped[str | None] = mapped_column(Text, nullable=True)
+    idp_metadata_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    issuer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    client_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    client_secret_secret_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    scopes: Mapped[list[str]] = mapped_column(ARRAY(Text), default=lambda: ["openid", "email", "profile"])
+    domains: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    jit_provisioning: Mapped[bool] = mapped_column(Boolean, default=True)
+    default_role_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    group_claim: Mapped[str | None] = mapped_column(Text, nullable=True)
+    group_mapping: Mapped[dict] = mapped_column(JSONB, default=dict)
+    enforce: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_login_at: Mapped[datetime | None] = ts(nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class AgentIdentity(Base):
+    __tablename__ = "agent_identities"
+    __table_args__ = (UniqueConstraint("sso_connection_id", "subject"),)
+
+    id: Mapped[int] = pk()
+    agent_id: Mapped[int] = mapped_column(BigInteger)
+    sso_connection_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sso_connections.id", ondelete="CASCADE"))
+    subject: Mapped[str] = mapped_column(Text)
+    last_login_at: Mapped[datetime | None] = ts(nullable=True)
+
+
+class MfaChallenge(Base):
+    __tablename__ = "mfa_challenges"
+
+    id: Mapped[int] = pk()
+    agent_id: Mapped[int] = mapped_column(BigInteger)
+    method: Mapped[str] = mapped_column(Text)
+    code_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    token_hash: Mapped[str] = mapped_column(Text, unique=True)
+    ip: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    expires_at: Mapped[datetime] = ts()
+    verified_at: Mapped[datetime | None] = ts(nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class TrustedDevice(Base):
+    __tablename__ = "trusted_devices"
+    __table_args__ = (UniqueConstraint("agent_id", "device_hash"),)
+
+    id: Mapped[int] = pk()
+    agent_id: Mapped[int] = mapped_column(BigInteger)
+    device_hash: Mapped[str] = mapped_column(Text)
+    ip: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_used_at: Mapped[datetime] = ts(default=utcnow)
+    expires_at: Mapped[datetime] = ts()
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class PasswordHistory(Base):
+    __tablename__ = "password_history"
+    __mapper_args__ = {"primary_key": ["agent_id", "created_at"]}  # tabla sin PK propia
+
+    agent_id: Mapped[int] = mapped_column(BigInteger)
+    password_hash: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class PasswordReset(Base):
+    __tablename__ = "password_resets"
+
+    id: Mapped[int] = pk()
+    agent_id: Mapped[int] = mapped_column(BigInteger)
+    token_hash: Mapped[str] = mapped_column(Text, unique=True)
+    ip: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime] = ts()
+    used_at: Mapped[datetime | None] = ts(nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class AuthEvent(Base):
+    """Particionada: PK (id, created_at)."""
+
+    __tablename__ = "auth_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    organization_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    agent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    event: Mapped[str] = mapped_column(Text)
+    ip: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail: Mapped[dict] = mapped_column(JSONB, default=dict)

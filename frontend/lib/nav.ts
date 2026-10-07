@@ -1,7 +1,7 @@
 /** Menú del panel (misma estructura que Atom). `soon` = módulo de una fase posterior. */
 export type NavItem = { label: string; href: string; soon?: boolean; adminOnly?: boolean };
 export type NavGroup = { label: string; items: NavItem[] };
-export type NavEntry = { label: string; icon: string; href?: string; adminOnly?: boolean; groups?: NavGroup[] };
+export type NavEntry = { label: string; icon: string; href?: string; adminOnly?: boolean; staffOnly?: boolean; groups?: NavGroup[] };
 
 export const NAV: NavEntry[] = [
   { label: "Inicio", icon: "🏠", href: "/" },
@@ -61,6 +61,8 @@ export const NAV: NavEntry[] = [
         label: "General",
         items: [
           { label: "En tiempo real", href: "/reportes/tiempo-real" },
+          { label: "Nivel de servicio", href: "/reportes/servicio" },
+          { label: "Reporte Login", href: "/reportes/login" },
           { label: "Reporte general", href: "/reportes/general" },
           { label: "Etapas de contactos", href: "/reportes/etapas" },
           { label: "IA y Cortex", href: "/reportes/ia" },
@@ -110,6 +112,7 @@ export const NAV: NavEntry[] = [
     ],
   },
   { label: "Seguimiento", icon: "📌", href: "/seguimiento" },
+  { label: "Monitoreo", icon: "🛰️", href: "/monitoreo", staffOnly: true },  // admin o supervisor
   {
     label: "Mi espacio",
     icon: "🎯",
@@ -119,6 +122,7 @@ export const NAV: NavEntry[] = [
         items: [
           { label: "Mi coaching", href: "/coaching" },
           { label: "Notificaciones", href: "/configuraciones/notificaciones" },
+          { label: "Mi seguridad", href: "/perfil/seguridad" },
         ],
       },
     ],
@@ -140,6 +144,12 @@ export const NAV: NavEntry[] = [
           { label: "Campos de cliente", href: "/configuraciones/campos" },
           { label: "Campos y datos maestros", href: "/configuraciones/datos-maestros" },
           { label: "Gestión usuarios", href: "/configuraciones/usuarios" },
+          { label: "Estados de asesor", href: "/configuraciones/estados" },
+          { label: "Horarios de atención", href: "/configuraciones/horarios" },
+          { label: "Enrutamiento", href: "/configuraciones/enrutamiento" },
+          { label: "Roles y permisos", href: "/configuraciones/roles" },
+          { label: "Seguridad", href: "/configuraciones/seguridad" },
+          { label: "Auditoría de acceso", href: "/configuraciones/auditoria" },
           { label: "Reportes", href: "/configuraciones/reportes" },
           { label: "Mi empresa", href: "/configuraciones/empresa" },
           { label: "Gestor de recursos", href: "/configuraciones/recursos" },

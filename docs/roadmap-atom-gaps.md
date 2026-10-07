@@ -1,8 +1,10 @@
 # Backlog: gaps vs. AtomChat (Atom Service Desk) manual
 
-Source: every page of the Atom user manual, integrations manual, "Bot portable" and release notes (read 2026-10-12).
+Source: every page of the Atom user manual, integrations manual, "Bot portable" and release notes (read October 2026).
 Only features we lack (MISSING) or only partly have (PARTIAL). Size: S / M / L.
 Priority after the onboarding wizard (docs/data-model.md §13).
+
+**Status 2026-10-07:** items 1–11 below are implemented (migrations 26–29, §18). Still open: email channel, agent-initiated WhatsApp calls, embeddable WhatsApp floating button, web chat advanced options, `/v1/messages` routing options.
 
 ## Recommended order
 

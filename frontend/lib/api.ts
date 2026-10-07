@@ -6,7 +6,7 @@ export type Agent = {
   id: number;
   email: string;
   name: string;
-  role: "admin" | "agent";
+  role: "admin" | "supervisor" | "agent";
   availability: Availability;
   is_active: boolean;
 };
@@ -229,7 +229,9 @@ export type Campaign = CampaignStats & {
 export type CampaignDetail = Campaign & {
   recipients: { id: number; contact_id: number; wa_id: string; name: string | null; status: string; error: string | null }[];
 };
-export type AutomationType = "welcome" | "keyword_reply" | "keyword_handoff" | "business_hours" | "inactivity_close";
+export type AutomationType =
+  | "welcome" | "keyword_reply" | "keyword_handoff" | "business_hours" | "inactivity_close"
+  | "sla_agent_no_reply" | "sla_client_no_reply" | "sla_unassigned";
 export type Automation = {
   id: number;
   name: string;

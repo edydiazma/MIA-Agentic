@@ -20,7 +20,8 @@ from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import current_agent, require_admin
+from app.auth import current_agent
+from app.permissions import require_permission
 from app.config import get_settings
 from app.crm import connections as cx
 from app.crm import attribution_fields as af
@@ -117,7 +118,7 @@ async def crm_status(agent: Agent = Depends(current_agent), session: AsyncSessio
 
 # --- Conexión -------------------------------------------------------------------
 @router.get("/{provider}/connect", dependencies=CRM)
-async def connect(provider: str, agent: Agent = Depends(require_admin)):
+async def connect(provider: str, agent: Agent = Depends(require_permission("integrations.manage"))):
     _provider(provider)
     if not cx.configured(provider):
         raise HTTPException(409, f"Falta configurar la app de {PROVIDERS[provider]} en el servidor "
@@ -163,7 +164,7 @@ async def callback(provider: str, code: str | None = None, state: str | None = N
 
 
 @router.post("/hubspot/token", dependencies=CRM)
-async def hubspot_token(body: TokenIn, agent: Agent = Depends(require_admin),
+async def hubspot_token(body: TokenIn, agent: Agent = Depends(require_permission("integrations.manage")),
                         session: AsyncSession = Depends(get_session)):
     """Conexión con token de app privada de HubSpot (sin OAuth)."""
     token = body.token.strip()
@@ -179,7 +180,7 @@ async def hubspot_token(body: TokenIn, agent: Agent = Depends(require_admin),
 
 
 @router.delete("/{provider}")
-async def disconnect(provider: str, agent: Agent = Depends(require_admin), session: AsyncSession = Depends(get_session)):
+async def disconnect(provider: str, agent: Agent = Depends(require_permission("integrations.manage")), session: AsyncSession = Depends(get_session)):
     conn = await _conn(session, agent.organization_id, provider)
     await cx.disconnect(session, conn)
     return {"ok": True}
@@ -206,7 +207,7 @@ async def get_mappings(provider: str, agent: Agent = Depends(current_agent),
 
 
 @router.put("/{provider}/mappings", dependencies=CRM)
-async def put_mappings(provider: str, body: MappingsIn, agent: Agent = Depends(require_admin),
+async def put_mappings(provider: str, body: MappingsIn, agent: Agent = Depends(require_permission("integrations.manage")),
                        session: AsyncSession = Depends(get_session)):
     conn = await _conn(session, agent.organization_id, provider)
     seen = set()
@@ -234,7 +235,7 @@ async def put_mappings(provider: str, body: MappingsIn, agent: Agent = Depends(r
 
 
 @router.put("/{provider}/settings", dependencies=CRM)
-async def put_settings(provider: str, body: ConnSettingsIn, agent: Agent = Depends(require_admin),
+async def put_settings(provider: str, body: ConnSettingsIn, agent: Agent = Depends(require_permission("integrations.manage")),
                        session: AsyncSession = Depends(get_session)):
     conn = await _conn(session, agent.organization_id, provider)
     s = dict(conn.settings or {})
@@ -275,7 +276,7 @@ async def _adapter(session: AsyncSession, conn: IntegrationConnection):
 
 
 @router.post("/hubspot/attribution-properties", dependencies=CRM)
-async def hubspot_attribution_properties(agent: Agent = Depends(require_admin),
+async def hubspot_attribution_properties(agent: Agent = Depends(require_permission("integrations.manage")),
                                          session: AsyncSession = Depends(get_session)):
     """Crea en HubSpot el grupo «Atribución WhatsApp» y sus propiedades de contacto (idempotente) y las mapea."""
     conn = await _conn(session, agent.organization_id, "hubspot")
@@ -310,7 +311,7 @@ async def hubspot_attribution_properties(agent: Agent = Depends(require_admin),
 
 
 @router.post("/salesforce/attribution-mapping", dependencies=CRM)
-async def salesforce_attribution_mapping(agent: Agent = Depends(require_admin),
+async def salesforce_attribution_mapping(agent: Agent = Depends(require_permission("integrations.manage")),
                                          session: AsyncSession = Depends(get_session)):
     """Mapea la atribución a los campos que existan en el objeto de contactos (Contact o Lead): LeadSource si es
     editable y WA_*__c personalizados. Devuelve los personalizados que faltan para que el admin los cree."""
@@ -344,7 +345,7 @@ async def salesforce_attribution_mapping(agent: Agent = Depends(require_admin),
 
 # --- Sincronización -------------------------------------------------------------
 @router.post("/{provider}/sync", dependencies=CRM)
-async def sync_now(provider: str, agent: Agent = Depends(require_admin), session: AsyncSession = Depends(get_session)):
+async def sync_now(provider: str, agent: Agent = Depends(require_permission("integrations.manage")), session: AsyncSession = Depends(get_session)):
     org = agent.organization_id
     conn = await _conn(session, org, provider)
     if conn.status != "connected":
@@ -366,7 +367,7 @@ async def outbox(provider: str, status: str | None = None, limit: int = Query(de
 
 
 @router.post("/{provider}/outbox/{row_id}/retry", dependencies=CRM)
-async def retry(provider: str, row_id: int, agent: Agent = Depends(require_admin),
+async def retry(provider: str, row_id: int, agent: Agent = Depends(require_permission("integrations.manage")),
                 session: AsyncSession = Depends(get_session)):
     conn = await _conn(session, agent.organization_id, provider)
     row = (await session.scalars(select(IntegrationOutbox).where(

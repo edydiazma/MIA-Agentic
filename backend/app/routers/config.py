@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import storage
 from app.auth import current_agent, require_admin
+from app.permissions import require_permission
 from app.classifier import validate_classifier
 from app.config import get_settings
 from app.db import get_session
@@ -40,7 +41,12 @@ INTEGRATIONS = {
 
 class QuickReplyIn(BaseModel):
     shortcut: str
-    text: str
+    text: str  # admite {{agent_name}}, {{client_name}}, {{client_first_name}}, {{group_name}}, {{company_name}}
+    title: str | None = None
+    category: str | None = None
+    resource_ids: list[int] = []  # adjuntos del Gestor de recursos
+    group_ids: list[int] = []  # vacío = todos los grupos
+    is_active: bool = True
 
 
 class ChannelIn(BaseModel):
@@ -68,15 +74,15 @@ class AlertOut(BaseModel):
 # --- Settings -------------------------------------------------------------------
 @router.get("/settings/{key}")
 async def read_setting(key: str, agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
-    if key not in DEFAULTS:
+    if key not in DEFAULTS or key == "security":  # la política de seguridad va por /api/security/policy
         raise HTTPException(404, "Configuración desconocida")
     return await get_setting(session, key, agent.organization_id)
 
 
 @router.put("/settings/{key}")
-async def write_setting(key: str, body: dict, agent: Agent = Depends(require_admin),
+async def write_setting(key: str, body: dict, agent: Agent = Depends(require_permission("settings.manage")),
                         session: AsyncSession = Depends(get_session)):
-    if key not in DEFAULTS:
+    if key not in DEFAULTS or key == "security":  # la política de seguridad va por /api/security/policy
         raise HTTPException(404, "Configuración desconocida")
     if key == "company" and body.get("timezone"):
         try:
@@ -91,8 +97,29 @@ async def write_setting(key: str, body: dict, agent: Agent = Depends(require_adm
 
 
 # --- Respuestas rápidas ---------------------------------------------------------
-def _qr(q: QuickReply) -> dict:
-    return {"id": q.id, "shortcut": q.shortcut, "text": q.text}
+async def _qr(session: AsyncSession, q: QuickReply) -> dict:
+    from app.routers.outreach import qr_out
+
+    res = {r.id: r for r in (await session.scalars(select(Resource).where(
+        Resource.organization_id == q.organization_id, Resource.id.in_(q.resource_ids or [0])))).all()}
+    return qr_out(q, None, res)
+
+
+async def _check_qr_refs(session: AsyncSession, org: int, body: QuickReplyIn) -> None:
+    from app.models import Group
+
+    for model, ids, label in ((Resource, body.resource_ids, "Recurso"), (Group, body.group_ids, "Grupo")):
+        for i in set(ids):
+            row = await session.get(model, i)
+            if not row or row.organization_id != org:
+                raise HTTPException(404, f"{label} {i} no encontrado")
+
+
+def _apply_qr(q: QuickReply, body: QuickReplyIn) -> None:
+    q.title = (body.title or "").strip() or None
+    q.category = (body.category or "").strip() or None
+    q.resource_ids, q.group_ids = sorted(set(body.resource_ids)), sorted(set(body.group_ids))
+    q.is_active, q.updated_at = body.is_active, utcnow()
 
 
 def _shortcut(raw: str) -> str:
@@ -110,10 +137,13 @@ async def _quick(session: AsyncSession, qid: int, agent: Agent) -> QuickReply:
 
 
 @router.get("/quick-replies")
-async def list_quick_replies(agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
-    rows = (await session.scalars(select(QuickReply).where(QuickReply.organization_id == agent.organization_id)
-                                  .order_by(QuickReply.shortcut))).all()
-    return [_qr(q) for q in rows]
+async def list_quick_replies(q: str | None = None, conversation_id: int | None = None, include_inactive: bool = False,
+                             agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
+    """Con conversation_id: solo las disponibles para el grupo de la conversación, con variables resueltas."""
+    from app.routers.outreach import quick_replies_for
+
+    return await quick_replies_for(session, agent, q, conversation_id,
+                                   include_inactive=include_inactive and agent.role == "admin")
 
 
 @router.post("/quick-replies")
@@ -125,19 +155,24 @@ async def create_quick_reply(body: QuickReplyIn, agent: Agent = Depends(require_
     if await session.scalar(select(QuickReply.id).where(QuickReply.organization_id == agent.organization_id,
                                                         QuickReply.shortcut == shortcut)):
         raise HTTPException(409, "Ese atajo ya existe")
-    q = QuickReply(organization_id=agent.organization_id, shortcut=shortcut, text=body.text.strip())
+    await _check_qr_refs(session, agent.organization_id, body)
+    q = QuickReply(organization_id=agent.organization_id, shortcut=shortcut, text=body.text.strip(),
+                   created_by=agent.id)
+    _apply_qr(q, body)
     session.add(q)
     await session.commit()
-    return _qr(q)
+    return await _qr(session, q)
 
 
 @router.put("/quick-replies/{qid}")
 async def update_quick_reply(qid: int, body: QuickReplyIn, agent: Agent = Depends(require_admin),
                              session: AsyncSession = Depends(get_session)):
     q = await _quick(session, qid, agent)
+    await _check_qr_refs(session, agent.organization_id, body)
     q.shortcut, q.text = _shortcut(body.shortcut), body.text.strip()
+    _apply_qr(q, body)
     await session.commit()
-    return _qr(q)
+    return await _qr(session, q)
 
 
 @router.delete("/quick-replies/{qid}")
