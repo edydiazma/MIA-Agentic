@@ -13,13 +13,7 @@ import { Card, ErrorBox, Field, Loading, PageHeader, Toggle, useAction, useApi }
 import { AdminNotice, ConfigTabs, SaveBar, useIsAdmin } from "@/components/config/common";
 import ClassifierTest from "@/components/config/ClassifierTest";
 
-const PROVIDERS: [ClassifierSettings["provider"], string][] = [
-  ["anthropic", "Anthropic Claude"],
-  ["openai", "OpenAI"],
-  ["openai_compatible", "Compatible con OpenAI (Azure, Groq, vLLM, Ollama…)"],
-];
-const CLAUDE_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"];
-const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+type CortexLite = { id: number; name: string; purpose: string; is_active: boolean; members: { connection_name: string; model: string }[] };
 const MODE_OPTIONS: [string, string][] = [
   ["auto", "Aplicar automáticamente"],
   ["suggest", "Solo sugerir al asesor"],
@@ -58,6 +52,7 @@ function GroupRow({ group, disabled, onSaved }: { group: Group; disabled: boolea
 
 export default function ClasificacionPage() {
   const isAdmin = useIsAdmin();
+  const { data: cortexes } = useApi<CortexLite[]>("/api/ai/cortexes");
   const { data, error: loadError } = useApi<ClassifierSettings>("/api/settings/classifier");
   const { data: convSettings } = useApi<Settings["conversations"]>("/api/settings/conversations");
   const { data: groups, reload: reloadGroups } = useApi<Group[]>("/api/groups");
@@ -85,9 +80,7 @@ export default function ClasificacionPage() {
   const ro = !isAdmin;
 
   async function save() {
-    const { api_key, has_api_key: _h, ...rest } = draft!;
-    const body = api_key ? { ...rest, api_key } : rest;
-    const r = await run(() => send<ClassifierSettings>("/api/settings/classifier", "PUT", body));
+    const r = await run(() => send<ClassifierSettings>("/api/settings/classifier", "PUT", draft!));
     if (r) {
       setDraft(r);
       setSaved(new Date().toLocaleTimeString("es"));
@@ -110,48 +103,21 @@ export default function ClasificacionPage() {
         <Card title="Conexión">
           <div className="form">
             <Toggle checked={draft.enabled} onChange={(v) => !ro && set("enabled", v)} label="Clasificación con IA activa" />
-            <Field label="Proveedor">
-              <select disabled={ro} value={draft.provider} onChange={(e) => set("provider", e.target.value as ClassifierSettings["provider"])}>
-                {PROVIDERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            <Field label="Cortex" hint="El Cortex decide qué modelo usar y hace failover si uno falla o tarda demasiado.">
+              <select disabled={ro} value={draft.cortex_id ?? ""}
+                      onChange={(e) => set("cortex_id", e.target.value ? Number(e.target.value) : null)}>
+                <option value="">Cortex principal</option>
+                {(cortexes ?? []).filter((c) => c.is_active).map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} · {c.members.map((m) => m.model).join(" → ") || "sin conexiones"}
+                  </option>
+                ))}
               </select>
             </Field>
-            <Field label="Modelo" hint={draft.provider === "anthropic" ? undefined : "Nombre del modelo tal como lo espera el proveedor."}>
-              <input disabled={ro} list="classifier-models" value={draft.model} onChange={(e) => set("model", e.target.value)} />
-              <datalist id="classifier-models">
-                {draft.provider === "anthropic" && CLAUDE_MODELS.map((m) => <option key={m} value={m} />)}
-              </datalist>
-            </Field>
-            {draft.provider === "anthropic" && (
-              <Field label="Esfuerzo" hint="«low» suele bastar para clasificar; súbelo si las etiquetas son sutiles.">
-                <select disabled={ro} value={draft.effort ?? ""} onChange={(e) => set("effort", e.target.value || null)}>
-                  <option value="">Por defecto</option>
-                  {EFFORTS.map((x) => <option key={x} value={x}>{x}</option>)}
-                </select>
-              </Field>
-            )}
-            {draft.provider === "openai_compatible" && (
-              <Field label="URL base" hint="Endpoint compatible con la API de OpenAI (termina normalmente en /v1).">
-                <input disabled={ro} placeholder="https://…/v1" value={draft.base_url} onChange={(e) => set("base_url", e.target.value)} />
-              </Field>
-            )}
-            <Field
-              label="Clave del proveedor"
-              hint={draft.has_api_key && !draft.clear_api_key
-                ? "Clave guardada ✓ — deja vacío para conservarla."
-                : "Si la dejas vacía se usa la clave del servidor (ANTHROPIC_API_KEY / OPENAI_API_KEY)."}
-            >
-              <div className="inline" style={{ flexWrap: "nowrap" }}>
-                <input type="password" autoComplete="new-password" disabled={ro} value={draft.api_key}
-                       placeholder={draft.has_api_key && !draft.clear_api_key ? "••••••••" : ""}
-                       onChange={(e) => setDraft({ ...draft, api_key: e.target.value, clear_api_key: false })} />
-                {draft.has_api_key && !ro && (
-                  <button type="button" className="danger" onClick={() => setDraft({ ...draft, api_key: "", clear_api_key: true })}
-                          disabled={draft.clear_api_key}>
-                    {draft.clear_api_key ? "Se quitará al guardar" : "Quitar clave"}
-                  </button>
-                )}
-              </div>
-            </Field>
+            <p className="small muted" style={{ margin: 0 }}>
+              Las conexiones (Claude, OpenAI, compatibles) y sus claves se gestionan en{" "}
+              <Link href="/automatizaciones/cortex/conexiones">Conexiones y failover</Link>.
+            </p>
           </div>
         </Card>
 

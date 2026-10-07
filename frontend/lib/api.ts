@@ -86,13 +86,7 @@ export type ConversationTag = { name: string; description: string; in_catalog: b
 export type ClassifierMode = "auto" | "suggest" | "off";
 export type ClassifierSettings = {
   enabled: boolean;
-  provider: "anthropic" | "openai" | "openai_compatible";
-  model: string;
-  effort: string | null;
-  base_url: string;
-  api_key: string; // siempre vacío al leer; enviar solo para cambiarla
-  has_api_key?: boolean;
-  clear_api_key?: boolean;
+  cortex_id: number | null; // null = Cortex principal
   instructions: string;
   tags: { name: string; description: string }[];
   typification_criteria: Record<string, string>;
@@ -145,19 +139,25 @@ export type Message = {
   error: string | null;
   created_at: string;
 };
+/** Agente de IA (ruta /api/bots por compatibilidad). */
 export type Bot = {
   id: number;
   name: string;
+  description: string | null;
   enabled: boolean;
-  provider: string;
-  model: string;
-  effort: string | null;
+  cortex_id: number | null;
   system_prompt: string;
   handoff_message: string;
+  use_knowledge: boolean;
+  use_memory: boolean;
+  use_customer_memory: boolean;
+  use_catalog: boolean;
+  use_appointments: boolean;
+  channel_ids: number[];
 };
 export type KnowledgeDoc = {
   id: number;
-  bot_id: number;
+  bot_ids: number[];
   title: string;
   content: string;
   enabled: boolean;
@@ -255,7 +255,8 @@ export type Channel = {
   name: string;
   phone_number_id: string;
   display_phone: string | null;
-  bot_id: number | null;
+  waba_id?: string | null;
+  bot_id: number | null; // agente de IA por defecto del número (default_ai_agent_id)
   has_own_token: boolean;
   token_configured: boolean;
 };

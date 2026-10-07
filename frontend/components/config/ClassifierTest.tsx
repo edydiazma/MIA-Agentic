@@ -32,8 +32,7 @@ export default function ClassifierTest({ draft }: { draft: ClassifierSettings })
   async function test() {
     if (!selected) return;
     setOut(null);
-    const { api_key, has_api_key: _h, clear_api_key: _c, ...config } = draft;
-    const body = { conversation_id: selected, config: api_key ? { ...config, api_key } : config };
+    const body = { conversation_id: selected, config: draft };
     const r = await run(() => send<ClassifyResponse>("/api/classifier/test", "POST", body));
     if (r) setOut(r);
   }
