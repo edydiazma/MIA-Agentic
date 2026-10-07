@@ -54,7 +54,7 @@ Colors follow Scratch 3's convention by category.
 
 | Category | Block (`type`) | Junior | Inputs | Notes |
 |---|---|---|---|---|
-| **Events** (hat) | `inbound_message`, `keyword`, `handoff`, `close`, `schedule`, `webhook`, `manual`, `campaign_reply` | ✔ | trigger config | Only one per script; equals `flows.trigger_type` |
+| **Events** (hat) | `inbound_message`, `keyword`, `handoff`, `close`, `schedule`, `webhook`, `manual`, `campaign_reply`, `wa_link` | ✔ | trigger config | Only one per script; equals `flows.trigger_type`. `wa_link`: when the customer arrives through a trigger message (`links`: slugs or names, empty = any); a link with `flow_id` starts that flow (its `wa_link` script, else its first script) |
 | **Messages** | `send_text` | ✔ | text | Respects the 24 h window |
 | | `send_media` | ✔ | resource_id / url, caption | From the resource library |
 | | `send_buttons` | ✔ | text, buttons[≤3] | Interactive buttons |

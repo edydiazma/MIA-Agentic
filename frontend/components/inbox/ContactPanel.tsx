@@ -19,6 +19,7 @@ import CustomFieldsEditor from "@/components/fields/CustomFieldsEditor";
 import FieldHistory from "@/components/fields/FieldHistory";
 import AIAnalysis from "./AIAnalysis";
 import DealsSection from "@/components/crm/DealsSection";
+import ConversationOrigin from "@/components/attribution/ConversationOrigin";
 
 function in60Days() {
   const d = new Date();
@@ -177,14 +178,7 @@ export default function ContactPanel({
         )}
       </div>
 
-      {conversation.ad_headline && (
-        <div>
-          <h3>Origen</h3>
-          <p className="small" style={{ margin: 0 }}>
-            📣 Llegó desde el anuncio «{conversation.ad_headline}»
-          </p>
-        </div>
-      )}
+      <ConversationOrigin key={conversation.id} conversationId={conversation.id} adHeadline={conversation.ad_headline} />
 
       <DealsSection key={contact.id} contact={contact} conversationId={conversation.id} />
 

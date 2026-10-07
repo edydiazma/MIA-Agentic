@@ -14,7 +14,7 @@ from app.auth import current_agent, require_admin
 from app.classifier import validate_classifier
 from app.config import get_settings
 from app.db import get_session
-from app.models import AIAgent, Agent, Alert, Channel, Integration, QuickReply, Resource, utcnow
+from app.models import AIAgent, Agent, Alert, Channel, IntegrationConnection, QuickReply, Resource, utcnow
 from app.schemas import UTCDateTime
 from app.secrets_vault import put_secret
 from app.settings_store import DEFAULTS, get_setting, set_setting
@@ -271,17 +271,29 @@ async def update_channel(cid: int, body: ChannelIn, agent: Agent = Depends(requi
 
 
 # --- Integraciones --------------------------------------------------------------
-@router.get("/integrations")
-async def list_integrations(agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
-    rows = {i.key: i for i in (await session.scalars(
-        select(Integration).where(Integration.organization_id == agent.organization_id))).all()}
+# Clave del panel -> proveedor en integration_connections y pantalla donde se conecta.
+INTEGRATION_PROVIDERS = {"hubspot": ("hubspot", "/configuraciones/integraciones"),
+                         "salesforce": ("salesforce", "/configuraciones/integraciones"),
+                         "google_ads": ("google_ads", "/configuraciones/conversiones"),
+                         "meta_ads": ("meta", "/configuraciones/conversiones")}
+
+
+async def integration_status(session: AsyncSession, org: int) -> list[dict]:
+    rows = {c.provider: c for c in (await session.scalars(
+        select(IntegrationConnection).where(IntegrationConnection.organization_id == org))).all()}
     out = []
     for key, meta in INTEGRATIONS.items():
-        i = rows.get(key)
-        out.append({"key": key, **meta, "connected": bool(i and i.connected),
-                    "last_sync_at": i.last_sync_at if i else None, "last_error": i.last_error if i else None,
-                    "available": False})  # el conector aún no está implementado
+        provider, href = INTEGRATION_PROVIDERS[key]
+        c = rows.get(provider)
+        out.append({"key": key, **meta, "href": href, "available": True,
+                    "connected": bool(c and c.status == "connected"), "status": c.status if c else None,
+                    "last_sync_at": c.last_sync_at if c else None, "last_error": c.last_error if c else None})
     return out
+
+
+@router.get("/integrations")
+async def list_integrations(agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
+    return await integration_status(session, agent.organization_id)
 
 
 # --- Alertas --------------------------------------------------------------------

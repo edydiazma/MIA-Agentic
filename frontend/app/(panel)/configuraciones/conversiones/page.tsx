@@ -63,11 +63,11 @@ function Connections({ isAdmin }: { isAdmin: boolean }) {
   const meta = data?.find((c) => c.provider === "meta");
   const [customers, setCustomers] = useState<string[] | null>(null);
   const [gForm, setGForm] = useState({ customer_id: "", login_customer_id: "" });
-  const [mForm, setMForm] = useState({ access_token: "", waba_id: "" });
+  const [mForm, setMForm] = useState({ access_token: "", waba_id: "", ad_account_id: "" });
 
   useEffect(() => {
     if (google) setGForm({ customer_id: google.external_account_id ?? "", login_customer_id: google.settings.login_customer_id ?? "" });
-    if (meta) setMForm({ access_token: "", waba_id: meta.external_account_id ?? "" });
+    if (meta) setMForm({ access_token: "", waba_id: meta.external_account_id ?? "", ad_account_id: meta.settings.ad_account_id ?? "" });
   }, [google, meta]);
 
   async function connectGoogle() {
@@ -82,7 +82,7 @@ function Connections({ isAdmin }: { isAdmin: boolean }) {
     if (await run(() => send("/api/attribution/connections/google_ads", "PUT", gForm))) reload();
   }
   async function saveMeta() {
-    const body = { waba_id: mForm.waba_id, access_token: mForm.access_token || null };
+    const body = { waba_id: mForm.waba_id, access_token: mForm.access_token || null, ad_account_id: mForm.ad_account_id };
     if (await run(() => send("/api/attribution/connections/meta", "PUT", body))) {
       setMForm((f) => ({ ...f, access_token: "" }));
       reload();
@@ -194,6 +194,11 @@ function Connections({ isAdmin }: { isAdmin: boolean }) {
                 </Field>
                 <Field label="ID de la cuenta de WhatsApp Business (WABA)">
                   <input value={mForm.waba_id} disabled={!isAdmin} onChange={(e) => setMForm({ ...mForm, waba_id: e.target.value })} />
+                </Field>
+                <Field label="Cuenta publicitaria de Meta (act_…)"
+                  hint="Para traer los nombres de campañas y anuncios y elegir anuncios en los mensajes disparadores. El token necesita el permiso ads_read.">
+                  <input value={mForm.ad_account_id} disabled={!isAdmin} placeholder="act_1234567890"
+                    onChange={(e) => setMForm({ ...mForm, ad_account_id: e.target.value })} />
                 </Field>
                 {isAdmin && (
                   <div className="inline">

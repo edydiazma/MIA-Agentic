@@ -23,8 +23,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import current_agent, require_admin
 from app.config import get_settings
 from app.crm import connections as cx
+from app.crm import attribution_fields as af
 from app.crm import hubspot, salesforce
-from app.crm.base import PROVIDERS, CRMError
+from app.crm.base import PROVIDERS, CRMError, TokenRevoked
 from app.crm.sync import sync_connection
 from app.db import SessionLocal, get_session
 from app.models import Agent, InboundEvent, IntegrationConnection, IntegrationMapping, IntegrationOutbox
@@ -34,8 +35,10 @@ from app.schemas import UTCDateTime
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
 log = logging.getLogger(__name__)
 CRM = [Depends(feature_required("crm"))]
-LOCAL_FIELDS = {"contact": ["name", "first_name", "last_name", "email", "phone", "stage", "notes", "memory"],
-                "deal": ["deal.name", "deal.amount", "deal.stage", "deal.status", "deal.currency", "deal.close_date"]}
+LOCAL_FIELDS = {"contact": ["name", "first_name", "last_name", "email", "phone", "stage", "notes", "memory",
+                            *af.FIELDS],
+                "deal": ["deal.name", "deal.amount", "deal.stage", "deal.status", "deal.currency", "deal.close_date",
+                         *af.FIELDS]}
 _tasks: set[asyncio.Task] = set()
 
 
@@ -196,6 +199,8 @@ async def get_mappings(provider: str, agent: Agent = Depends(current_agent),
                           "remote_property": m.remote_property, "direction": m.direction, "transform": m.transform}
                          for m in rows],
             "local_fields": {"contact": LOCAL_FIELDS["contact"] + customs, "deal": LOCAL_FIELDS["deal"]},
+            # Grupos para el panel de mapeo (los campos de atribución solo se envían, nunca se leen del CRM)
+            "field_groups": {"attribution": {"label": "Atribución", "push_only": True, "fields": af.FIELDS}},
             "defaults": cx.default_mappings(provider, (conn.settings or {}).get("contact_object", "Contact"))}
 
 
@@ -219,8 +224,9 @@ async def put_mappings(provider: str, body: MappingsIn, agent: Agent = Depends(r
         seen.add((m.object, m.local_field))
     await session.execute(delete(IntegrationMapping).where(IntegrationMapping.connection_id == conn.id))
     for m in body.mappings:
+        direction = "push" if af.is_attribution(m.local_field) else m.direction  # atribución: solo push
         session.add(IntegrationMapping(connection_id=conn.id, object=m.object, local_field=m.local_field,
-                                       remote_property=m.remote_property.strip(), direction=m.direction,
+                                       remote_property=m.remote_property.strip(), direction=direction,
                                        transform=m.transform))
     await session.commit()
     return await get_mappings(provider, agent, session)
@@ -246,6 +252,93 @@ async def put_settings(provider: str, body: ConnSettingsIn, agent: Agent = Depen
         conn.sync_enabled = body.sync_enabled
     await session.commit()
     return await _status(session, agent.organization_id, provider)
+
+
+# --- Atribución en el CRM ---------------------------------------------------------
+async def _upsert_push_mapping(session: AsyncSession, conn_id: int, obj: str, local_field: str, remote: str) -> None:
+    """Un campo local de atribución → una propiedad (reemplaza el mapeo previo de ese campo)."""
+    row = await session.scalar(select(IntegrationMapping).where(
+        IntegrationMapping.connection_id == conn_id, IntegrationMapping.object == obj,
+        IntegrationMapping.local_field == local_field))
+    if row:
+        row.remote_property, row.direction, row.transform = remote, "push", None
+    else:
+        session.add(IntegrationMapping(connection_id=conn_id, object=obj, local_field=local_field,
+                                       remote_property=remote, direction="push"))
+
+
+async def _adapter(session: AsyncSession, conn: IntegrationConnection):
+    if conn.status != "connected":
+        raise HTTPException(409, "La conexión tiene un error: vuelve a conectar la cuenta")
+    return await cx.adapter_for(session, conn)
+
+
+@router.post("/hubspot/attribution-properties", dependencies=CRM)
+async def hubspot_attribution_properties(agent: Agent = Depends(require_admin),
+                                         session: AsyncSession = Depends(get_session)):
+    """Crea en HubSpot el grupo «Atribución WhatsApp» y sus propiedades de contacto (idempotente) y las mapea."""
+    conn = await _conn(session, agent.organization_id, "hubspot")
+    adapter = await _adapter(session, conn)
+    created, existing = [], []
+    try:
+        try:
+            await adapter._call("POST", "/crm/v3/properties/contacts/groups",
+                                {"name": af.HUBSPOT_GROUP, "label": "Atribución WhatsApp", "displayOrder": -1})
+        except CRMError as e:
+            if e.status != 409:
+                raise
+        for name, label, _local, kind in af.HUBSPOT_PROPERTIES:
+            body = {"name": name, "label": label, "groupName": af.HUBSPOT_GROUP, "type": kind,
+                    "fieldType": "number" if kind == "number" else "text",
+                    "description": "Escrito por la plataforma de WhatsApp (solo lectura en HubSpot)"}
+            try:
+                await adapter._call("POST", "/crm/v3/properties/contacts", body)
+                created.append(name)
+            except CRMError as e:
+                if e.status != 409:
+                    raise
+                existing.append(name)
+    except TokenRevoked as e:
+        raise HTTPException(409, "HubSpot rechazó las credenciales: vuelve a conectar la cuenta") from e
+    except CRMError as e:
+        raise HTTPException(502, f"HubSpot: {e}") from e
+    for name, _label, local, _kind in af.HUBSPOT_PROPERTIES:
+        await _upsert_push_mapping(session, conn.id, "contact", local, name)
+    await session.commit()
+    return {"created": created, "existing": existing, "mapped": len(af.HUBSPOT_PROPERTIES)}
+
+
+@router.post("/salesforce/attribution-mapping", dependencies=CRM)
+async def salesforce_attribution_mapping(agent: Agent = Depends(require_admin),
+                                         session: AsyncSession = Depends(get_session)):
+    """Mapea la atribución a los campos que existan en el objeto de contactos (Contact o Lead): LeadSource si es
+    editable y WA_*__c personalizados. Devuelve los personalizados que faltan para que el admin los cree."""
+    conn = await _conn(session, agent.organization_id, "salesforce")
+    adapter = await _adapter(session, conn)
+    obj = adapter.contact_object
+    try:
+        fields = {f["name"]: f for f in (await adapter._call("GET", f"/sobjects/{obj}/describe")).json()["fields"]}
+    except TokenRevoked as e:
+        raise HTTPException(409, "Salesforce rechazó las credenciales: vuelve a conectar la cuenta") from e
+    except CRMError as e:
+        raise HTTPException(502, f"Salesforce: {e}") from e
+    mapped, missing, skipped = [], [], []
+    for name, local in af.SALESFORCE_STANDARD:
+        f = fields.get(name)
+        # Lista de valores restringida: nuestros nombres de canal no existirían → no se mapea
+        if f and f.get("updateable") and not f.get("restrictedPicklist"):
+            await _upsert_push_mapping(session, conn.id, "contact", local, name)
+            mapped.append(name)
+        else:
+            skipped.append(name)
+    for name, local in af.SALESFORCE_CUSTOM:
+        if name in fields and fields[name].get("updateable", True):
+            await _upsert_push_mapping(session, conn.id, "contact", local, name)
+            mapped.append(name)
+        else:
+            missing.append(name)
+    await session.commit()
+    return {"object": obj, "mapped": mapped, "missing": missing, "skipped": skipped}
 
 
 # --- Sincronización -------------------------------------------------------------

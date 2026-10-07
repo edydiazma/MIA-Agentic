@@ -3,6 +3,10 @@
 Flujo: el sitio carga /t/{key}.js → POST /t/collect crea la sesión y devuelve un ref_code → los enlaces de
 WhatsApp pasan por /t/wa/{key}?r=CODE, que registra el clic y redirige a wa.me con "(ref: CODE)" en el texto.
 Cuando el cliente escribe, app.attribution encuentra el código y une la conversación con la visita.
+
+Mensajes disparadores (wa_links): /t/l/{slug} registra el clic con los parámetros de la URL (UTMs, gclid,
+fbclid…), crea la visita con link_id y redirige a wa.me con el texto del enlace y "(ref: CODE)". Si la página
+ya tiene el script, este agrega ?r=CODE a esos enlaces y se reutiliza la visita en lugar de crear otra.
 """
 
 import json
@@ -18,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.attribution import REF_WINDOW, hash_ip, new_ref_code
 from app.config import get_settings
 from app.db import get_session
-from app.models import Channel, TrackingSite, WebEvent, WebSession, utcnow
+from app.models import Channel, TrackingSite, WaLink, WebEvent, WebSession, utcnow
 
 router = APIRouter(prefix="/t", tags=["tracking"])
 MAX_FIELD = 1000
@@ -109,7 +113,9 @@ function post(path,data,cb){try{var x=new XMLHttpRequest();x.open("POST",B+path,
 x.onload=function(){if(cb&&x.status<300){try{cb(JSON.parse(x.responseText))}catch(e){}}};x.send(JSON.stringify(data))}catch(e){}}
 function store(){try{return JSON.parse(sessionStorage.getItem(S)||"null")}catch(e){return null}}
 function rewrite(ref){var a=d.querySelectorAll('a[href*="wa.me"],a[href*="api.whatsapp.com"]');
-for(var i=0;i<a.length;i++){if(a[i].getAttribute("data-wa-agent"))continue;a[i].setAttribute("data-wa-agent","1");a[i].href=B+"/t/wa/"+K+"?r="+ref}}
+for(var i=0;i<a.length;i++){if(a[i].getAttribute("data-wa-agent"))continue;a[i].setAttribute("data-wa-agent","1");a[i].href=B+"/t/wa/"+K+"?r="+ref}
+var l=d.querySelectorAll('a[href^="'+B+'/t/l/"]');for(var j=0;j<l.length;j++){if(l[j].getAttribute("data-wa-agent"))continue;
+l[j].setAttribute("data-wa-agent","1");var u=new URL(l[j].href);u.searchParams.set("r",ref);l[j].href=u.toString()}}
 function ready(ref){w.waAgent.ref=ref;rewrite(ref);if(w.MutationObserver){new MutationObserver(function(){rewrite(ref)}).observe(d.documentElement,{childList:true,subtree:true})}}
 w.waAgent={k:K,ref:null,open:function(){w.location.href=B+"/t/wa/"+K+(w.waAgent.ref?"?r="+w.waAgent.ref:"")},
 track:function(name){if(w.waAgent.ref)post("/t/event",{k:K,r:w.waAgent.ref,type:"custom",name:String(name||""),url:w.location.href})}};
@@ -204,3 +210,58 @@ async def wa_redirect(public_key: str, r: str | None = None, session: AsyncSessi
             text = f"{text} (ref: {ws.ref_code})"
     target = f"https://wa.me/{phone}?text={quote(text)}" if phone else f"https://wa.me/?text={quote(text)}"
     return RedirectResponse(target, status_code=302)
+
+
+def _wa_url(channel: Channel | None, text: str) -> str:
+    phone = re.sub(r"\D", "", (channel.display_phone if channel else "") or "")
+    return f"https://wa.me/{phone}?text={quote(text)}" if phone else f"https://wa.me/?text={quote(text)}"
+
+
+async def link_channel(session: AsyncSession, link: WaLink) -> Channel | None:
+    if link.channel_id:
+        return await session.get(Channel, link.channel_id)
+    return (await session.scalars(select(Channel).where(Channel.organization_id == link.organization_id)
+                                  .order_by(Channel.id).limit(1))).first()
+
+
+def direct_url(channel: Channel | None, link: WaLink) -> str:
+    """wa.me sin redirección (anuncios Click to WhatsApp, impresos): se atribuye por el texto."""
+    return _wa_url(channel, link.trigger_text)
+
+
+@router.get("/l/{slug}")
+async def link_redirect(slug: str, request: Request, r: str | None = None, session: AsyncSession = Depends(get_session)):
+    """Enlace corto de un mensaje disparador: registra la visita y el clic y abre WhatsApp."""
+    link = await session.scalar(select(WaLink).where(WaLink.slug == slug.lower()))
+    if not link:
+        raise HTTPException(404, "Enlace no encontrado")
+    channel = await link_channel(session, link)
+    if not link.is_active:  # enlace pausado: WhatsApp igual abre, sin tracking
+        return RedirectResponse(direct_url(channel, link), status_code=302)
+    q = request.query_params
+    ws = None
+    if r:  # la página tenía el script: misma visita
+        ws = (await session.scalars(select(WebSession).where(
+            WebSession.organization_id == link.organization_id, WebSession.ref_code == r.upper(),
+            WebSession.created_at >= utcnow() - REF_WINDOW).limit(1))).first()
+    if ws is None:
+        ws = WebSession(organization_id=link.organization_id, link_id=link.id,
+                        visitor_id=_clip(q.get("vid")) or "link", ref_code=await _unique_code(session),
+                        landing_url=_clip(str(request.url)), referrer=_clip(request.headers.get("referer")),
+                        user_agent=_clip(request.headers.get("user-agent")), ip_hash=hash_ip(_client_ip(request)))
+        session.add(ws)
+    ws.link_id = ws.link_id or link.id
+    for p in PARAMS:  # los parámetros del enlace (anuncio) mandan sobre los de la visita
+        if q.get(p):
+            setattr(ws, p, _clip(q.get(p)))
+    for f in ("utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"):
+        if not getattr(ws, f) and getattr(link, f):
+            setattr(ws, f, getattr(link, f))
+    ws.wa_click_at = ws.wa_click_at or utcnow()
+    ws.last_seen_at = utcnow()
+    await session.flush()
+    session.add(WebEvent(organization_id=link.organization_id, session_id=ws.id, type="wa_click",
+                         url=_clip(str(request.url))))
+    await session.commit()
+    text = f"{link.trigger_text} (ref: {ws.ref_code})" if link.append_ref else link.trigger_text
+    return RedirectResponse(_wa_url(channel, text), status_code=302)

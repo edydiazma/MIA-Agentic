@@ -125,6 +125,13 @@ current in-memory hub (one backend replica).
 - **Daily rollups** in `reporting.*` (by org and day, in the org's time zone):
   `daily_conversations`, `daily_agents`, `daily_groups`, `daily_typifications`, `daily_tags`,
   `hourly_messages`, `daily_ai`, `daily_billing`, `daily_campaigns`.
+- **Flow analytics** (migration 15): `daily_flows` (runs by start day: started/succeeded/failed/cancelled/waiting,
+  duration), `daily_flow_blocks` (per block: distinct runs that reached it, executions, errors, waits, `exits` =
+  failed/cancelled runs whose last step was the block, `stuck` = runs still waiting there, latency p50/p95) and
+  `daily_flow_choices` (option chosen in `switch_reply` / `ai_decide`, from `flow_run_steps.output->>'choice'`).
+  `flow_run_steps` carries `organization_id` and `flow_id` (denormalized, filled by the engine; a trigger covers other
+  writers) so the rollup groups millions of steps without joining `flow_runs` across partitions.
+  `refresh_range` = `refresh_core` (the original rollups) + `refresh_flows`.
 - `reporting.refresh_range(org, from, to)` is **idempotent** (delete+insert of the range); pg_cron runs it every
   10 minutes for today and yesterday, and it can be launched by hand for backfills.
 - Reports read rollups (milliseconds) instead of scanning months of messages.
@@ -244,6 +251,40 @@ erDiagram
 - Webhooks: the organization is resolved by `channels.phone_number_id` (never by configuration).
 - Onboarding: Meta **Embedded Signup** connects each customer's WhatsApp number (token in Vault).
 
+### 10.5 Trigger messages and multi-touch attribution (migration 16)
+
+```mermaid
+erDiagram
+  wa_links ||--o{ web_sessions : "short link /t/l/{slug}"
+  wa_links ||--o{ attributions : "last touch"
+  wa_links ||--o{ attribution_touches : ""
+  conversations ||--o{ attribution_touches : "partitioned"
+  attributions }o--o| ad_entities : "names (cache)"
+```
+
+- `wa_links` (**trigger message**): the prefilled WhatsApp text (`trigger_text`, normalized as `trigger_key`:
+  lowercase, no accents/punctuation, no ref code), platform (`meta_ads | google_ads | web | social | email | qr | sms |
+  other`), UTMs (defaults per platform), Meta ad ids and Google campaign ids that use it, and arrival actions
+  (`tags`, `group_id`, `flow_id`). A unique partial index makes an active text identify exactly one link.
+  Published as a short link `/t/l/{slug}` (records the visit + click with the URL's UTMs/gclid/fbclid and appends
+  `(ref: CODE)`) or as a direct `wa.me` link (CTWA ads, printed material).
+- Matching on **every** inbound message: CTWA referral (link by `meta_ad_ids`, else by text) → ref code (visit; the
+  link fills missing UTMs) → trigger text (customer deleted the code) → first message only: template campaign →
+  direct. Text shorter than 8 normalized characters never matches.
+- `attributions` stays one row per conversation = **last touch** (what conversion uploads use). New columns:
+  `link_id`, enriched names (`platform_campaign_id/name`, `ad_group_id/name`, `ad_name`, `keyword`),
+  `enrichment_status`, `touches`, `first_touch_id`, `last_touch_at`. New channel `offline` (QR/SMS); new
+  `matched_by` value `trigger_text`.
+- `attribution_touches` (**partitioned** monthly, 24 months): each signal (first touch + returns through another
+  ad/link); an identical consecutive signal is not repeated. Enables first-touch vs last-touch analysis.
+- `ad_entities`: cache of Meta ad → ad set → campaign names and Google Ads gclid → campaign / ad group / keyword
+  (`click_view`), so enrichment does not call the APIs once per conversation.
+- `web_sessions.site_id` is now nullable and `web_sessions.link_id` records sessions created by a short link.
+- `reporting.daily_links`: clicks, conversations (last touch), first touches, returns, conversions and value per
+  link and day; `refresh_range` = core + flows + links.
+- Flows: new trigger block `wa_link` ("Cuando llega por un mensaje disparador", optional list of link slugs/names);
+  `wa_links.flow_id` starts that flow directly.
+
 ## 11. Feature log (data-model changes)
 
 | Date | Feature | Model change |
@@ -256,4 +297,7 @@ erDiagram
 | 2026-10-07 | Backend moved onto the Supabase model | The ORM mirrors the migrations (`test_schema`); 37 tests on real Postgres; storage in Supabase Storage; secrets in Vault |
 | 2026-10-07 | Flow engine | No schema changes: uses `flows`, `flow_versions`, `flow_runs` (`context` = variables + resumable execution stack), `flow_run_steps`. Shared block catalog `blocks.json` |
 | 2026-10-08 | Phase 2 (model) | Attribution, CRM, voice and SaaS: migrations 11–14 (section 10) |
+| 2026-10-10 | Trigger messages + multi-touch attribution + ad/CRM alignment | Migration 16 (§10.5): `wa_links`, `attribution_touches` (partitioned), `ad_entities`, `reporting.daily_links`; `attributions` +link/enriched names/touches; `web_sessions.link_id`, `site_id` nullable; channel `offline` |
+| 2026-10-09 | Reportes → Análisis de flujos | Migration 15: `flow_run_steps.organization_id/flow_id` (+ index, RLS `org_read`), `reporting.daily_flows`, `daily_flow_blocks`, `daily_flow_choices`, `reporting.refresh_flows`; `refresh_range` now wraps `refresh_core` + `refresh_flows` |
+| 2026-10-09 | Centro de Control → Integraciones | No schema change: the card reads `integration_connections` (phase 2) instead of the legacy `integrations` table |
 | 2026-10-07 | Security hardening (Supabase advisors) | Fixed `search_path` on functions; `pg_trgm`/`citext` → `extensions` schema; RLS helpers and Realtime triggers → `private` schema (not exposed through `/rest/v1/rpc`) |

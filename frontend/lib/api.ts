@@ -279,6 +279,9 @@ export type Integration = {
   last_sync_at: string | null;
   last_error: string | null;
   available: boolean;
+  status: string | null;
+  /** Pantalla del panel donde se conecta o gestiona. */
+  href: string;
 };
 export type Settings = {
   classifier: ClassifierSettings;

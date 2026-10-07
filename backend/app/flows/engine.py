@@ -204,7 +204,8 @@ class Runner:
             self.sim.steps.append({"block_id": block.get("id"), "type": block.get("type"), "status": status,
                                    "output": output, "error": error})
             return
-        self.session.add(FlowRunStep(run_id=self.run.id, run_started_at=self.run.started_at, block_id=block["id"],
+        self.session.add(FlowRunStep(organization_id=self.run.organization_id, flow_id=self.run.flow_id,
+                                     run_id=self.run.id, run_started_at=self.run.started_at, block_id=block["id"],
                                      block_type=block["type"], status=status, input=_jsonable(inputs),
                                      output=_jsonable(output), error=error, latency_ms=latency))
 
@@ -697,8 +698,36 @@ async def _active_flows(session: AsyncSession, org: int, trigger_types: list[str
         .order_by(Flow.priority, Flow.id))).unique().all())
 
 
-async def handle_inbound(session: AsyncSession, conv: Conversation, msg: Message) -> bool:
-    """Se llama con cada mensaje del cliente. True si un flujo se encargó (el bot de IA no responde)."""
+def link_matches(script: dict, link) -> bool:
+    """Disparador «Cuando llega por un mensaje disparador»: sin enlaces = cualquiera; si no, por slug o nombre."""
+    trig = script.get("trigger") or {}
+    if trig.get("type") != "wa_link":
+        return False
+    wanted = (trig.get("config") or {}).get("links") or []
+    wanted = {norm(str(w)) for w in (wanted if isinstance(wanted, list) else str(wanted).split(",")) if norm(str(w))}
+    return not wanted or norm(link.slug) in wanted or norm(link.name) in wanted
+
+
+async def _start_for_link(session: AsyncSession, conv: Conversation, link, text: str) -> bool:
+    """Inicia el flujo del mensaje disparador: primero el elegido en el enlace (su script «wa_link» o, si no
+    tiene, el primero), luego cualquier flujo activo con un disparador «wa_link» que coincida."""
+    flows = await _active_flows(session, conv.organization_id, ["wa_link"])
+    chosen = [f for f in flows if f.id == link.flow_id] + [f for f in flows if f.id != link.flow_id]
+    for flow in chosen:
+        scripts = flow.current_version.definition.get("scripts") or []
+        index = next((i for i, sc in enumerate(scripts) if link_matches(sc, link)), None)
+        if index is None and flow.id == link.flow_id and scripts:
+            index = 0
+        if index is not None:
+            await set_actor(session, "flow")
+            await start_run(session, flow, flow.current_version, index, conv, "wa_link", text)
+            return True
+    return False
+
+
+async def handle_inbound(session: AsyncSession, conv: Conversation, msg: Message, link=None) -> bool:
+    """Se llama con cada mensaje del cliente. True si un flujo se encargó (el bot de IA no responde).
+    `link`: mensaje disparador (wa_links) que trajo este mensaje, si lo hubo (app.attribution.on_inbound)."""
     text = msg.text or msg.transcript or ""
     async with _locks[conv.id]:
         waiting = (await session.scalars(
@@ -718,6 +747,8 @@ async def handle_inbound(session: AsyncSession, conv: Conversation, msg: Message
             return True
         if conv.status != "bot":
             return False
+        if link is not None and await _start_for_link(session, conv, link, text):
+            return True
         for flow in await _active_flows(session, conv.organization_id, ["inbound_message", "keyword"]):
             version = flow.current_version
             for i, script in enumerate(version.definition.get("scripts") or []):

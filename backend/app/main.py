@@ -23,7 +23,9 @@ ROUTERS = ["webhook", "auth", "inbox", "bots", "knowledge", "contacts", "campaig
            "reports", "classifier", "cortex", "memory", "seller", "catalog", "json_edit", "flows",
            # Fase 2
            "tracking", "attribution", "conversions", "deals", "integrations", "calls", "voice", "signup",
-           "billing", "platform"]
+           "billing", "platform",
+           # Mensajes disparadores
+           "wa_links"]
 
 
 async def bootstrap(org: int | None = None) -> None:
@@ -79,6 +81,7 @@ LOOPS = [
     "app.plans:usage_loop",
     "app.conversions:conversions_loop",  # detecta conversiones y las sube a Google Ads / Meta CAPI
     "app.crm.sync:crm_loop",  # sincroniza HubSpot / Salesforce (outbox + pull)
+    "app.ad_enrichment:enrichment_loop",  # nombres de campaña/anuncio (Meta) y de clic (Google Ads)
 ]
 
 

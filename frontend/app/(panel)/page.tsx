@@ -330,9 +330,14 @@ export default function HomePage() {
                 {i.connected ? (
                   <Badge tone="ok">Conectada {i.last_sync_at ? timeAgo(i.last_sync_at) : ""}</Badge>
                 ) : (
-                  <span className="small muted">Nunca se ha conectado</span>
+                  <span className="small muted">{i.status ? "Desconectada" : "Nunca se ha conectado"}</span>
                 )}
-                {!i.available && <Badge tone="info">Próximamente</Badge>}
+                {i.last_error && <Badge tone="bad">Error</Badge>}
+                {i.href && (
+                  <Link href={i.href} className="small">
+                    {i.connected ? "Gestionar" : "Conectar"}
+                  </Link>
+                )}
               </div>
             </div>
           ))}

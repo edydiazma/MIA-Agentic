@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.crm import attribution_fields
 from app.crm.base import CRMAdapter, CRMError, RemoteRecord, TokenRevoked, payload_hash
 from app.crm.connections import adapter_for
 from app.db import SessionLocal
@@ -51,7 +52,9 @@ def split_name(name: str | None) -> tuple[str, str]:
     return first, last.strip()
 
 
-def contact_value(contact: Contact, field: str, customs: dict):
+def contact_value(contact: Contact, field: str, customs: dict, attribution: dict | None = None):
+    if attribution_fields.is_attribution(field):
+        return (attribution or {}).get(field)
     first, last = split_name(contact.name)
     if field == "name":
         return contact.name
@@ -68,7 +71,9 @@ def contact_value(contact: Contact, field: str, customs: dict):
     return None
 
 
-def deal_value(deal: Deal, field: str):
+def deal_value(deal: Deal, field: str, attribution: dict | None = None):
+    if attribution_fields.is_attribution(field):
+        return (attribution or {}).get(field)
     if field == "deal.name":
         return deal.name
     if field == "deal.amount":
@@ -118,7 +123,17 @@ async def contact_push_props(session: AsyncSession, conn: IntegrationConnection,
 
     await session.refresh(contact, ["field_values"])
     customs = custom_values(contact)
-    return push_props(await mappings_for(session, conn.id, "contact"), lambda f: contact_value(contact, f, customs))
+    mappings = await mappings_for(session, conn.id, "contact")
+    attribution = (await attribution_fields.load(session, contact.id)
+                   if any(attribution_fields.is_attribution(m.local_field) for m in mappings) else {})
+    return push_props(mappings, lambda f: contact_value(contact, f, customs, attribution))
+
+
+async def deal_push_props(session: AsyncSession, conn: IntegrationConnection, deal: Deal) -> dict:
+    mappings = await mappings_for(session, conn.id, "deal")
+    attribution = (await attribution_fields.load(session, deal.contact_id, deal.conversation_id)
+                   if any(attribution_fields.is_attribution(m.local_field) for m in mappings) else {})
+    return push_props(mappings, lambda f: deal_value(deal, f, attribution))
 
 
 async def get_link(session: AsyncSession, conn_id: int, local_type: str, local_id: int) -> ExternalLink | None:
@@ -166,7 +181,7 @@ async def push_deal(session: AsyncSession, conn: IntegrationConnection, adapter:
                     deal: Deal) -> tuple[str, bool]:
     contact = await session.get(Contact, deal.contact_id)
     contact_remote, _ = await push_contact(session, conn, adapter, contact)
-    props = push_props(await mappings_for(session, conn.id, "deal"), lambda f: deal_value(deal, f))
+    props = await deal_push_props(session, conn, deal)
     h = payload_hash(props)
     link = await get_link(session, conn.id, "deal", deal.id)
     if link and link.sync_hash == h:
@@ -310,6 +325,23 @@ async def enqueue_contact(session: AsyncSession, contact_id: int) -> None:
         await session.commit()
 
 
+async def enqueue_attribution(session: AsyncSession, contact_id: int) -> None:
+    """La atribución del contacto cambió (toque nuevo o nombres de campaña): reenvía el contacto a cada CRM
+    conectado que tenga mapeado al menos un campo attribution.*. No hace nada si ninguno lo tiene."""
+    contact = await session.get(Contact, contact_id)
+    if not contact:
+        return
+    queued = False
+    for conn in await _connections(session, contact.organization_id):
+        mapped = await session.scalar(select(IntegrationMapping.id).where(
+            IntegrationMapping.connection_id == conn.id, IntegrationMapping.object == "contact",
+            IntegrationMapping.local_field.startswith(attribution_fields.PREFIX)).limit(1))
+        if mapped:
+            queued = await _enqueue(session, conn, "contact", contact_id) or queued
+    if queued:
+        await session.commit()
+
+
 async def enqueue_deal(session: AsyncSession, deal_id: int) -> None:
     deal = await session.get(Deal, deal_id)
     if deal:
@@ -391,7 +423,8 @@ async def apply_remote_contact(session: AsyncSession, conn: IntegrationConnectio
         return "unmatched"
     defs = await fields_by_key(session, conn.organization_id)
     values = {m.local_field: backward(record.properties.get(m.remote_property), m.transform)
-              for m in mappings if m.direction in ("pull", "both") and m.remote_property in record.properties}
+              for m in mappings if m.direction in ("pull", "both") and m.remote_property in record.properties
+              and not attribution_fields.is_attribution(m.local_field)}
     if "first_name" in values or "last_name" in values:
         first, last = split_name(contact.name)
         name = " ".join(x for x in (values.pop("first_name", first), values.pop("last_name", last)) if x).strip()
@@ -428,7 +461,8 @@ async def apply_remote_deal(session: AsyncSession, conn: IntegrationConnection, 
     if not deal:
         return "unmatched"
     for m in mappings:
-        if m.direction not in ("pull", "both") or m.remote_property not in record.properties:
+        if (m.direction not in ("pull", "both") or m.remote_property not in record.properties
+                or attribution_fields.is_attribution(m.local_field)):
             continue
         value = backward(record.properties[m.remote_property], m.transform)
         if m.local_field == "deal.name" and value:
@@ -439,7 +473,7 @@ async def apply_remote_deal(session: AsyncSession, conn: IntegrationConnection, 
             except (TypeError, ValueError):
                 pass
     await session.flush()
-    link.sync_hash = payload_hash(push_props(mappings, lambda f: deal_value(deal, f)))
+    link.sync_hash = payload_hash(await deal_push_props(session, conn, deal))
     link.remote_updated_at, link.last_synced_at = record.updated_at, utcnow()
     return "applied"
 

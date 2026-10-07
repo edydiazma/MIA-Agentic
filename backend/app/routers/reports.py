@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime, timedelta
 from statistics import median
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +32,8 @@ from app.models import (
     Contact,
     Conversation,
     ConversationEvent,
+    Flow,
+    FlowVersion,
     FollowUp,
     Group,
     Message,
@@ -41,8 +43,9 @@ from app.models import (
     utcnow,
 )
 from app.realtime import hub
+from app.flows.catalog import BLOCKS
 from app.routers.campaigns import campaign_stats
-from app.routers.config import INTEGRATIONS
+from app.routers.config import integration_status
 from app.settings_store import get_setting
 
 router = APIRouter(prefix="/api", tags=["reports"])
@@ -124,6 +127,8 @@ async def control_center(agent: Agent = Depends(current_agent), session: AsyncSe
         .outerjoin(AIConnectionHealth, AIConnectionHealth.connection_id == AIConnection.id)
         .where(AIConnection.organization_id == org))).all()
 
+    integrations = await integration_status(session, org)
+
     tz = await _tz(session, org)
     today_end = datetime.combine(now.astimezone(tz).date() + timedelta(days=1), datetime.min.time(), tz)
     my_open = await session.scalar(select(func.count()).where(
@@ -145,7 +150,8 @@ async def control_center(agent: Agent = Depends(current_agent), session: AsyncSe
         "cards": {
             "meta": {"alerts": len(meta_alerts)},
             "campaigns": {"total_7d": len(campaigns), "failed": sum(1 for c in campaigns if c.status == "failed")},
-            "integrations": {"connected": 0, "total": len(INTEGRATIONS)},
+            "integrations": {"connected": sum(1 for i in integrations if i["connected"]), "total": len(integrations),
+                             "failing": sum(1 for i in integrations if i["last_error"])},
             "webhooks": {"total": len(hooks), "active": hooks_active,
                          "failing": sum(1 for w in hooks if w.active and w.consecutive_failures),
                          "disabled": len(hooks) - hooks_active},
@@ -493,6 +499,131 @@ async def ai_report(start: date | None = None, end: date | None = None, agent: A
         "by_connection": items,
         "series": [{"day": d.isoformat(), **dict(series.get(d, {}))} for d in _days(start, end)],
     }
+
+
+# --- Análisis de flujos ---------------------------------------------------------
+BLOCK_LABELS = {b["type"]: b["label"] for b in BLOCKS}
+
+
+def _walk_blocks(definition: dict) -> list[dict]:
+    """Bloques del flujo en orden de lectura (script → bloques → ramas), con profundidad y rama."""
+    out: list[dict] = []
+
+    def walk(blocks, script: str, depth: int, lane: str | None) -> None:
+        for b in blocks or []:
+            if not isinstance(b, dict) or not b.get("id"):
+                continue
+            options = [str(o if isinstance(o, str) else o.get("title", ""))
+                       for o in (b.get("inputs") or {}).get("options") or []]
+            out.append({"block_id": b["id"], "block_type": b.get("type"), "script": script, "depth": depth,
+                        "lane": lane, "options": options})
+            # jsonb no conserva el orden de las claves: ramas en el orden en que se leen en el editor
+            branches = b.get("branches") or {}
+            order = [*options, "then", "else", "body", "other"]
+            for name in sorted(branches, key=lambda n: order.index(n) if n in order else len(order)):
+                walk(branches[name], script, depth + 1, name)
+
+    for s in definition.get("scripts") or []:
+        walk(s.get("blocks"), s.get("name") or s.get("id") or "", 0, None)
+    return out
+
+
+def _flow_totals(rows: list[dict]) -> dict:
+    t = Counter()
+    for r in rows:
+        for k in ("started", "succeeded", "failed", "cancelled", "waiting", "duration_sum_s", "finished"):
+            t[k] += r[k] or 0
+    return {"started": t["started"], "succeeded": t["succeeded"], "failed": t["failed"],
+            "cancelled": t["cancelled"], "waiting": t["waiting"],
+            "completion_pct": _pct(t["succeeded"], t["started"]),
+            "avg_duration_s": round(t["duration_sum_s"] / t["finished"]) if t["finished"] else None}
+
+
+@router.get("/reports/flows")
+async def flows_report(start: date | None = None, end: date | None = None, agent: Agent = Depends(current_agent),
+                       session: AsyncSession = Depends(get_session)):
+    """Resumen por flujo: ejecuciones, finalización, fallos y duración (reporting.daily_flows)."""
+    org = agent.organization_id
+    _lo, _hi, _tz, start, end = await _range(session, org, start, end)
+    rows = await _rows(session, """
+        select d.* from reporting.daily_flows d
+        where d.organization_id = :o and d.day between :a and :b""", o=org, a=start, b=end)
+    flows = (await session.scalars(select(Flow).where(Flow.organization_id == org, Flow.status != "archived")
+                                   .order_by(Flow.name))).unique().all()
+    by_flow: dict[int, list[dict]] = defaultdict(list)
+    series: dict[date, Counter] = defaultdict(Counter)
+    for r in rows:
+        by_flow[r["flow_id"]].append(r)
+        series[r["day"]]["started"] += r["started"]
+        series[r["day"]]["succeeded"] += r["succeeded"]
+        series[r["day"]]["failed"] += r["failed"]
+    items = [{"flow_id": f.id, "name": f.name, "status": f.status, "trigger_type": f.trigger_type,
+              **_flow_totals(by_flow.get(f.id, []))} for f in flows]
+    items.sort(key=lambda i: -i["started"])
+    return {"start": start, "end": end, "totals": _flow_totals(rows), "flows": items,
+            "series": [{"day": d.isoformat(), **dict(series.get(d, {}))} for d in _days(start, end)]}
+
+
+@router.get("/reports/flows/{flow_id}")
+async def flow_funnel(flow_id: int, start: date | None = None, end: date | None = None,
+                      agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
+    """Embudo de un flujo: por bloque, cuántas ejecuciones llegan, abandonan, fallan o esperan, y las opciones
+    elegidas. El orden es el de la versión vigente; los bloques que ya no existen van al final."""
+    org = agent.organization_id
+    flow = await session.get(Flow, flow_id)
+    if not flow or flow.organization_id != org:
+        raise HTTPException(404, "Flujo no encontrado")
+    _lo, _hi, _tz, start, end = await _range(session, org, start, end)
+    version = flow.current_version or await session.scalar(
+        select(FlowVersion).where(FlowVersion.flow_id == flow.id).order_by(FlowVersion.version.desc()).limit(1))
+    layout = _walk_blocks(version.definition if version else {})
+
+    runs = await _rows(session, """
+        select * from reporting.daily_flows where organization_id = :o and flow_id = :f and day between :a and :b""",
+                       o=org, f=flow.id, a=start, b=end)
+    blocks = await _rows(session, """
+        select block_id, max(block_type) as block_type, sum(runs)::int as runs, sum(executions)::int as executions,
+               sum(errors)::int as errors, sum(waits)::int as waits, sum(exits)::int as exits,
+               sum(stuck)::int as stuck, max(latency_p50_ms) as latency_p50_ms, max(latency_p95_ms) as latency_p95_ms
+        from reporting.daily_flow_blocks
+        where organization_id = :o and flow_id = :f and day between :a and :b
+        group by block_id""", o=org, f=flow.id, a=start, b=end)
+    choices = await _rows(session, """
+        select block_id, choice, sum(runs)::int as runs from reporting.daily_flow_choices
+        where organization_id = :o and flow_id = :f and day between :a and :b
+        group by block_id, choice order by runs desc""", o=org, f=flow.id, a=start, b=end)
+
+    totals = _flow_totals(runs)
+    stats = {b["block_id"]: b for b in blocks}
+    by_block: dict[str, list[dict]] = defaultdict(list)
+    for c in choices:
+        by_block[c["block_id"]].append({"choice": c["choice"], "runs": c["runs"]})
+
+    def row(meta: dict, removed: bool = False) -> dict:
+        st = stats.get(meta["block_id"], {})
+        reached = st.get("runs") or 0
+        opts = by_block.get(meta["block_id"], [])
+        chosen = sum(o["runs"] for o in opts)
+        return {**meta, "label": BLOCK_LABELS.get(meta["block_type"], meta["block_type"]), "removed": removed,
+                "runs": reached, "reach_pct": _pct(reached, totals["started"]),
+                "executions": st.get("executions") or 0, "errors": st.get("errors") or 0,
+                "waits": st.get("waits") or 0, "exits": st.get("exits") or 0, "stuck": st.get("stuck") or 0,
+                "drop_pct": _pct((st.get("exits") or 0) + (st.get("stuck") or 0), reached),
+                "latency_p50_ms": st.get("latency_p50_ms"), "latency_p95_ms": st.get("latency_p95_ms"),
+                "choices": [{**o, "pct": _pct(o["runs"], chosen)} for o in opts]}
+
+    known = {m["block_id"] for m in layout}
+    out = [row(m) for m in layout]
+    out += [row({"block_id": b["block_id"], "block_type": b["block_type"], "script": None, "depth": 0,
+                 "lane": None, "options": []}, removed=True)
+            for b in blocks if b["block_id"] not in known]
+    worst = max((b for b in out if b["runs"]), key=lambda b: b["exits"] + b["stuck"], default=None)
+    return {"flow": {"id": flow.id, "name": flow.name, "status": flow.status,
+                     "version": version.version if version else None},
+            "start": start, "end": end, "totals": totals, "blocks": out,
+            "top_dropoff": worst["block_id"] if worst and (worst["exits"] + worst["stuck"]) else None,
+            "series": [{"day": r["day"].isoformat(), "started": r["started"], "succeeded": r["succeeded"],
+                        "failed": r["failed"]} for r in sorted(runs, key=lambda r: r["day"])]}
 
 
 # --- Exportación ----------------------------------------------------------------

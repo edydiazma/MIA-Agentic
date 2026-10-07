@@ -244,13 +244,13 @@ async def _handle_message(phone_number_id: str, m: dict, profile_name: str | Non
                 msg.error = f"No se pudo descargar el archivo: {e}"[:2000]
 
         await record_message(session, conv, msg)
-        from app.attribution import on_inbound as attribute  # ref_code web / Click to WA (app/attribution.py)
+        from app.attribution import on_inbound as attribute  # Click to WA, ref web, mensaje disparador
 
-        await attribute(session, conv, msg, m)
+        link = await attribute(session, conv, msg, m)
         from app.flows.engine import handle_inbound as flows_inbound
 
-        # Orden: flujos (incluida una espera de respuesta) → automatizaciones → bot de IA
-        handled = await flows_inbound(session, conv, msg) or await on_inbound(session, conv, msg, is_new)
+        # Orden: flujos (espera de respuesta, flujo del mensaje disparador, palabras clave) → automatizaciones → IA
+        handled = await flows_inbound(session, conv, msg, link) or await on_inbound(session, conv, msg, is_new)
         from app.classifier import maybe_periodic  # import diferido: classifier depende de service
 
         await maybe_periodic(session, conv)

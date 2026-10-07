@@ -81,6 +81,7 @@ function ProviderCard({ status: s, onChange, reload }: { status: CRMStatus; onCh
   const [run, busy, error] = useAction();
   const [tokenModal, setTokenModal] = useState(false);
   const [panel, setPanel] = useState<"mappings" | "outbox" | null>(null);
+  const [mappingsKey, setMappingsKey] = useState(0);
   const base = `/api/integrations/${s.provider}`;
 
   async function connect() {
@@ -216,6 +217,16 @@ function ProviderCard({ status: s, onChange, reload }: { status: CRMStatus; onCh
             </div>
           </div>
 
+          {isAdmin && (
+            <AttributionSync
+              provider={s.provider}
+              onMapped={() => {
+                setMappingsKey((k) => k + 1);
+                setPanel("mappings");
+              }}
+            />
+          )}
+
           <div className="inline">
             <button className="link" onClick={() => setPanel(panel === "mappings" ? null : "mappings")}>
               {panel === "mappings" ? "Ocultar mapeo de campos" : "Mapeo de campos"}
@@ -224,7 +235,7 @@ function ProviderCard({ status: s, onChange, reload }: { status: CRMStatus; onCh
               {panel === "outbox" ? "Ocultar registro de envíos" : "Registro de envíos"}
             </button>
           </div>
-          {panel === "mappings" && <MappingsEditor provider={s.provider} readOnly={!isAdmin} />}
+          {panel === "mappings" && <MappingsEditor key={mappingsKey} provider={s.provider} readOnly={!isAdmin} />}
           {panel === "outbox" && <OutboxLog provider={s.provider} canRetry={isAdmin} />}
         </div>
       )}
@@ -343,6 +354,67 @@ function OutboxLog({ provider, canRetry }: { provider: CRMProvider; canRetry: bo
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+type HubSpotAttributionResult = { created: string[]; existing: string[]; mapped: number | string[] | boolean };
+type SalesforceAttributionResult = { mapped: string[]; missing: string[] };
+
+/** Envía el origen de la conversación (canal, UTMs, campaña, enlace, gclid) al CRM. */
+function AttributionSync({ provider, onMapped }: { provider: CRMProvider; onMapped: () => void }) {
+  const [run, busy, error] = useAction();
+  const [hubspot, setHubspot] = useState<HubSpotAttributionResult | null>(null);
+  const [salesforce, setSalesforce] = useState<SalesforceAttributionResult | null>(null);
+
+  async function go() {
+    if (provider === "hubspot") {
+      const r = await run(() => send<HubSpotAttributionResult>("/api/integrations/hubspot/attribution-properties", "POST"));
+      if (r) {
+        setHubspot(r);
+        onMapped();
+      }
+    } else {
+      const r = await run(() => send<SalesforceAttributionResult>("/api/integrations/salesforce/attribution-mapping", "POST"));
+      if (r) {
+        setSalesforce(r);
+        onMapped();
+      }
+    }
+  }
+  const mappedCount = (m: HubSpotAttributionResult["mapped"]) => (Array.isArray(m) ? m.length : typeof m === "number" ? m : m ? "sí" : 0);
+
+  return (
+    <div className="stack" style={{ gap: 6 }}>
+      <div className="inline" style={{ justifyContent: "space-between" }}>
+        <span className="small">
+          <strong>Atribución en el CRM:</strong>{" "}
+          {provider === "hubspot"
+            ? "crea las propiedades de origen de WhatsApp (canal, UTMs, campaña, anuncio, mensaje disparador, gclid) y las mapea."
+            : "mapea el origen de WhatsApp a LeadSource y a los campos personalizados que existan en tu organización."}
+        </span>
+        <button disabled={busy} onClick={go}>
+          {busy ? "Procesando…" : provider === "hubspot" ? "Crear propiedades de atribución" : "Mapear atribución"}
+        </button>
+      </div>
+      <ErrorBox error={error} />
+      {hubspot && (
+        <p className="small" style={{ margin: 0 }}>
+          ✅ {hubspot.created.length} propiedades creadas, {hubspot.existing.length} ya existían · mapeadas: {mappedCount(hubspot.mapped)}.
+        </p>
+      )}
+      {salesforce && (
+        <div className="small">
+          ✅ Mapeados: {salesforce.mapped.length ? salesforce.mapped.join(", ") : "ninguno"}.
+          {salesforce.missing.length > 0 && (
+            <>
+              {" "}
+              Para enviar el resto, crea estos campos personalizados de texto en Salesforce (Contacto y Lead) y vuelve a pulsar el
+              botón: <code>{salesforce.missing.join(", ")}</code>
+            </>
+          )}
         </div>
       )}
     </div>

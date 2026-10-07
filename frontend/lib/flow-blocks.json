@@ -170,6 +170,22 @@
    ]
   },
   {
+   "type": "wa_link",
+   "category": "events",
+   "label": "Cuando llega por un mensaje disparador",
+   "icon": "🔗",
+   "junior": true,
+   "shape": "hat",
+   "inputs": [
+    {
+     "name": "links",
+     "label": "Mensajes disparadores (slug o nombre; vacío = cualquiera)",
+     "type": "options",
+     "required": false
+    }
+   ]
+  },
+  {
    "type": "send_text",
    "category": "messages",
    "label": "Enviar texto",

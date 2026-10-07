@@ -21,6 +21,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, REAL, UUID
@@ -801,6 +802,8 @@ class FlowRunStep(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    organization_id: Mapped[int] = mapped_column(BigInteger)
+    flow_id: Mapped[int] = mapped_column(BigInteger)
     run_id: Mapped[int] = mapped_column(BigInteger)
     run_started_at: Mapped[datetime] = ts()
     block_id: Mapped[str] = mapped_column(Text)
@@ -976,7 +979,8 @@ class WebSession(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
     organization_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("organizations.id"))
-    site_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("tracking_sites.id"))
+    site_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("tracking_sites.id"), nullable=True)
+    link_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # visita creada por un enlace corto
     visitor_id: Mapped[str] = mapped_column(Text)
     ref_code: Mapped[str] = mapped_column(Text)
     landing_url: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -1042,7 +1046,94 @@ class Attribution(Base):
     ctwa_clid: Mapped[str | None] = mapped_column(Text, nullable=True)
     ad_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     landing_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    link_id: Mapped[int | None] = fk("wa_links.id", ondelete="SET NULL")
+    platform_campaign_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    platform_campaign_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_group_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_group_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    keyword: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enrichment_status: Mapped[str] = mapped_column(Text, default="skipped")  # pending | done | failed | skipped
+    enriched_at: Mapped[datetime | None] = ts(nullable=True)
+    touches: Mapped[int] = mapped_column(Integer, default=1)
+    first_touch_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_touch_at: Mapped[datetime | None] = ts(nullable=True)
     created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class WaLink(Base):
+    """Mensaje disparador: texto prellenado de WhatsApp + UTMs + anuncios + acciones al llegar (§10.5)."""
+
+    __tablename__ = "wa_links"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    channel_id: Mapped[int | None] = fk("channels.id", ondelete="SET NULL")
+    name: Mapped[str] = mapped_column(Text)
+    slug: Mapped[str] = mapped_column(Text, unique=True)
+    platform: Mapped[str] = mapped_column(Text, default="web")
+    trigger_text: Mapped[str] = mapped_column(Text)
+    trigger_key: Mapped[str] = mapped_column(Text)
+    append_ref: Mapped[bool] = mapped_column(Boolean, default=True)
+    utm_source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_medium: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_campaign: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_term: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta_ad_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    google_campaign_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    tags: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    group_id: Mapped[int | None] = fk("groups.id", ondelete="SET NULL")
+    flow_id: Mapped[int | None] = fk("flows.id", ondelete="SET NULL")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class AttributionTouch(Base):
+    """Particionada: PK (id, occurred_at). Cada toque de atribución de una conversación."""
+
+    __tablename__ = "attribution_touches"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    organization_id: Mapped[int] = mapped_column(BigInteger)
+    conversation_id: Mapped[int] = mapped_column(BigInteger)
+    contact_id: Mapped[int] = mapped_column(BigInteger)
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    channel: Mapped[str] = mapped_column(Text)
+    matched_by: Mapped[str] = mapped_column(Text)
+    link_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    web_session_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    utm_source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_medium: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_campaign: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gclid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ctwa_clid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_first: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AdEntity(Base):
+    """Caché de nombres de campañas / grupos / anuncios (Meta) y clics (gclid de Google Ads)."""
+
+    __tablename__ = "ad_entities"
+    __table_args__ = (UniqueConstraint("organization_id", "platform", "entity_type", "external_id"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    platform: Mapped[str] = mapped_column(Text)  # meta | google_ads
+    entity_type: Mapped[str] = mapped_column(Text)  # ad | ad_group | campaign | click
+    external_id: Mapped[str] = mapped_column(Text)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    campaign_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    campaign_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_group_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_group_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    keyword: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data: Mapped[dict] = mapped_column(JSONB, default=dict)
+    fetched_at: Mapped[datetime] = ts(default=utcnow)
 
 
 class ConversionAction(Base):

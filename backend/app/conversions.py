@@ -47,7 +47,7 @@ BACKOFF_S = [60, 300, 1800, 7200, 43200]  # 1 min, 5 min, 30 min, 2 h, 12 h
 MAX_ATTEMPTS = 6
 CURSOR_KEY = "conversions_cursor"
 SNAPSHOT_FIELDS = ("channel", "utm_source", "utm_medium", "utm_campaign", "utm_term", "gclid", "gbraid", "wbraid",
-                   "fbc", "fbp", "ctwa_clid", "ad_id")
+                   "fbc", "fbp", "ctwa_clid", "ad_id", "landing_url", "link_id", "platform_campaign_name")
 
 
 def http_client(timeout: float = 30) -> httpx.AsyncClient:
@@ -372,6 +372,8 @@ async def upload_meta(session: AsyncSession, up: ConversionUpload) -> dict:
         event.update({"action_source": "business_messaging", "messaging_channel": "whatsapp"})
     else:  # vino de un anuncio a la web (fbc)
         event["action_source"] = "website"
+        if attr.get("landing_url"):  # Meta lo exige en eventos de sitio web
+            event["event_source_url"] = attr["landing_url"]
     if ev.value is not None:
         event["custom_data"] = {"value": float(ev.value), "currency": ev.currency}
     async with http_client(30) as http:

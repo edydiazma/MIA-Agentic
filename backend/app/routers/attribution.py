@@ -26,12 +26,14 @@ from app.models import (
     IntegrationConnection,
     TrackingSite,
     Typification,
+    WaLink,
     WebEvent,
     WebSession,
     utcnow,
 )
 from app.plans import feature_required
-from app.routers.reports import _days, _pct, _range
+from app.attribution import touches_for
+from app.routers.reports import _days, _pct, _range, _rows
 from app.routers.tracking import script
 from app.schemas import UTCDateTime
 from app.secrets_vault import delete_secret, put_secret
@@ -43,7 +45,8 @@ env = get_settings()
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_SCOPE = "https://www.googleapis.com/auth/adwords"
 CHANNEL_LABELS = {"meta_ctwa": "Click to WhatsApp (Meta)", "google_ads": "Google Ads", "meta_ads_web": "Meta Ads (web)",
-                  "paid_other": "Otros pagos", "organic_web": "Web orgánica", "campaign": "Campañas WhatsApp",
+                  "paid_other": "Otros pagos", "organic_web": "Web orgánica", "offline": "Offline (QR, SMS)",
+                  "campaign": "Campañas WhatsApp",
                   "direct": "Directo"}
 
 
@@ -176,6 +179,7 @@ class GoogleAdsSettings(BaseModel):
 class MetaConnectionIn(BaseModel):
     access_token: str | None = None
     waba_id: str | None = None
+    ad_account_id: str | None = None  # cuenta publicitaria (act_…): nombres de anuncios y selector de anuncios
 
 
 async def _conn(session: AsyncSession, org: int, provider: str) -> IntegrationConnection | None:
@@ -291,6 +295,9 @@ async def meta_settings(body: MetaConnectionIn, agent: Agent = Depends(require_a
                                                        conn.access_token_secret_id)
     if body.waba_id is not None:
         conn.external_account_id = body.waba_id.strip() or None
+    if body.ad_account_id is not None:
+        conn.settings = {**(conn.settings or {}),
+                         "ad_account_id": body.ad_account_id.strip().removeprefix("act_") or None}
     conn.status, conn.last_error = "connected", None
     await session.commit()
     return _conn_out("meta", conn)
@@ -407,7 +414,7 @@ async def attribution_report(start: str | None = None, end: str | None = None, a
     by_campaign: dict[tuple, Counter] = defaultdict(Counter)
     for a, status, success in rows:
         c = conv.get(a.conversation_id, {"count": 0, "value": 0.0})
-        for bucket in (by_channel[a.channel], by_campaign[(a.channel, a.utm_campaign or a.ad_id or "(sin campaña)")]):
+        for bucket in (by_channel[a.channel], by_campaign[(a.channel, a.platform_campaign_name or a.utm_campaign or a.ad_id or "(sin campaña)")]):
             bucket["conversations"] += 1
             bucket["sales"] += bool(success)
             bucket["closed"] += status == "closed"
@@ -450,7 +457,8 @@ async def click_to_wa_google(start: str | None = None, end: str | None = None, a
     series = {d.isoformat(): {"conversations": 0, "sales": 0} for d in _days(d0, d1)}
     for a, _status, success in rows:
         c = conv.get(a.conversation_id, {"count": 0, "value": 0.0})
-        for bucket in (by_campaign[a.utm_campaign or "(sin campaña)"], by_keyword[a.utm_term or "(sin palabra clave)"]):
+        for bucket in (by_campaign[a.platform_campaign_name or a.utm_campaign or "(sin campaña)"],
+                       by_keyword[a.keyword or a.utm_term or "(sin palabra clave)"]):
             bucket["conversations"] += 1
             bucket["sales"] += bool(success)
             bucket["conversions"] += c["count"]
@@ -482,12 +490,61 @@ async def click_to_wa_google(start: str | None = None, end: str | None = None, a
 @router.get("/attributions/conversation/{conv_id}", dependencies=FEATURE)
 async def conversation_attribution(conv_id: int, agent: Agent = Depends(current_agent),
                                    session: AsyncSession = Depends(get_session)):
+    """Último toque (lo que se sube como conversión), el enlace que lo trajo y todos los toques."""
     a = await session.scalar(select(Attribution).where(Attribution.conversation_id == conv_id,
                                                        Attribution.organization_id == agent.organization_id))
     if not a:
         return None
+    links = {}
+    touches = await touches_for(session, conv_id)
+    ids = {t.link_id for t in touches if t.link_id} | ({a.link_id} if a.link_id else set())
+    if ids:
+        links = {w.id: {"id": w.id, "name": w.name, "slug": w.slug, "platform": w.platform}
+                 for w in (await session.scalars(select(WaLink).where(WaLink.id.in_(ids)))).all()}
     return {"channel": a.channel, "label": CHANNEL_LABELS.get(a.channel, a.channel), "matched_by": a.matched_by,
             "utm_source": a.utm_source, "utm_medium": a.utm_medium, "utm_campaign": a.utm_campaign,
-            "utm_term": a.utm_term, "gclid": a.gclid, "ctwa_clid": a.ctwa_clid, "ad_id": a.ad_id,
-            "landing_url": a.landing_url, "created_at": a.created_at}
+            "utm_content": a.utm_content, "utm_term": a.utm_term, "gclid": a.gclid, "ctwa_clid": a.ctwa_clid,
+            "ad_id": a.ad_id, "landing_url": a.landing_url, "created_at": a.created_at,
+            "link": links.get(a.link_id), "campaign_id": a.platform_campaign_id, "campaign_name": a.platform_campaign_name,
+            "ad_group_name": a.ad_group_name, "ad_name": a.ad_name, "keyword": a.keyword,
+            "enrichment_status": a.enrichment_status, "touch_count": a.touches, "last_touch_at": a.last_touch_at,
+            "touches": [{"id": t.id, "occurred_at": t.occurred_at, "channel": t.channel,
+                         "label": CHANNEL_LABELS.get(t.channel, t.channel), "matched_by": t.matched_by,
+                         "is_first": t.is_first, "link": links.get(t.link_id), "utm_source": t.utm_source,
+                         "utm_medium": t.utm_medium, "utm_campaign": t.utm_campaign, "ad_id": t.ad_id,
+                         "gclid": t.gclid} for t in touches]}
 
+
+@router.get("/reports/wa-links", dependencies=FEATURE)
+async def wa_links_report(start: str | None = None, end: str | None = None, agent: Agent = Depends(current_agent),
+                          session: AsyncSession = Depends(get_session)):
+    """Rendimiento por mensaje disparador (reporting.daily_links): clics, conversaciones, primeros toques,
+    regresos, conversiones y valor."""
+    org = agent.organization_id
+    _lo, _hi, _tz, d0, d1 = await _range(session, org, date.fromisoformat(start) if start else None,
+                                        date.fromisoformat(end) if end else None)
+    rows = await _rows(session, """
+        select d.day, d.link_id, d.clicks, d.conversations, d.first_touches, d.retouches, d.conversions,
+               d.conversion_value::float as conversion_value
+        from reporting.daily_links d where d.organization_id = :o and d.day between :a and :b""", o=org, a=d0, b=d1)
+    links = {w.id: w for w in (await session.scalars(select(WaLink).where(WaLink.organization_id == org))).all()}
+    keys = ("clicks", "conversations", "first_touches", "retouches", "conversions", "conversion_value")
+    by_link: dict[int, Counter] = defaultdict(Counter)
+    series = {d.isoformat(): Counter() for d in _days(d0, d1)}
+    for r in rows:
+        for k in keys:
+            by_link[r["link_id"]][k] += r[k] or 0
+            series[r["day"].isoformat()][k] += r[k] or 0
+    items = []
+    for link_id, v in by_link.items():
+        w = links.get(link_id)
+        items.append({"link_id": link_id, "name": w.name if w else "(enlace eliminado)", "slug": w.slug if w else None,
+                      "platform": w.platform if w else None, "is_active": bool(w and w.is_active), **dict(v),
+                      "click_to_chat_pct": _pct(v["conversations"], v["clicks"]) if v["clicks"] else None,
+                      "conversion_rate_pct": _pct(v["conversions"], v["conversations"])})
+    items.sort(key=lambda r: (-r["conversations"], -r["clicks"]))
+    totals = Counter()
+    for v in by_link.values():
+        totals.update(v)
+    return {"totals": {k: totals.get(k, 0) for k in keys}, "links": items,
+            "series": [{"day": k, **{kk: v.get(kk, 0) for kk in keys}} for k, v in series.items()]}
