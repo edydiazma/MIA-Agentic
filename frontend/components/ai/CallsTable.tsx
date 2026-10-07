@@ -42,7 +42,7 @@ export default function CallsTable({ connections, cortexes }: { connections: AIC
           </select>
           <select style={{ width: "auto" }} value={f.purpose} onChange={(e) => upd("purpose", e.target.value)}>
             <option value="">Todos los usos</option>
-            {["chat", "classification", "learning", "flow", "json_edit", "test"].map((p) => <option key={p} value={p}>{p}</option>)}
+            {["chat", "classification", "learning", "flow", "json_edit", "test", "qa", "agent_test"].map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
           <button onClick={calls.reload}>Actualizar</button>
         </>

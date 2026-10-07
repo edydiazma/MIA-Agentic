@@ -14,6 +14,14 @@ class Settings(BaseSettings):
     media_dir: str = "./data/media"  # solo si no hay Supabase Storage configurado
     cors_origins: str = "http://localhost:3000"
 
+    # Escala y operación (docs/data-model.md §12.1)
+    role: str = "all"  # api (HTTP + WebSocket) | worker (tareas de fondo) | all (ambos, una sola réplica)
+    realtime_mode: str = "pg"  # pg: eventos entre réplicas por LISTEN/NOTIFY | local: solo este proceso
+    metrics_token: str = ""  # si se define, /metrics exige "Authorization: Bearer <token>"
+    log_format: str = "text"  # text | json
+    sentry_dsn: str = ""
+    app_version: str = "dev"
+
     # Auth
     jwt_secret: str = "change-me"
     jwt_expire_minutes: int = 60 * 12
@@ -64,6 +72,11 @@ class Settings(BaseSettings):
     stripe_webhook_secret: str = ""
     platform_admin_email: str = ""  # primer administrador del back-office (si la tabla está vacía)
     platform_admin_password: str = ""
+
+    # App del asesor (PWA): Web Push con VAPID (generar con `vapid --gen` de py-vapid o web-push)
+    vapid_public_key: str = ""  # base64url (applicationServerKey del navegador)
+    vapid_private_key: str = ""  # base64url o PEM
+    vapid_subject: str = "mailto:soporte@example.com"
 
     # IA
     anthropic_api_key: str = ""

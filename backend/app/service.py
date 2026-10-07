@@ -26,9 +26,9 @@ from app.models import (
 )
 from app.realtime import hub
 from app.schemas import AgentOut, ContactOut, ConversationOut, GroupOut, MessageOut
-from app.secrets_vault import get_secret
 from app.settings_store import get_setting
-from app.whatsapp import WhatsAppClient
+from app.channels import LABELS, WHATSAPP, channel_client, window_for
+from app.models import ContactIdentity
 
 SESSION_WINDOW = timedelta(hours=24)
 
@@ -36,7 +36,7 @@ SESSION_WINDOW = timedelta(hours=24)
 # --- Serialización (contrato estable de la API) ---------------------------------
 def contact_out(c: Contact) -> dict:
     return ContactOut(
-        id=c.id, wa_id=c.wa_id, name=c.name, email=c.email, notes=c.notes, stage=c.stage,
+        id=c.id, wa_id=c.wa_id, avatar_url=c.avatar_url, name=c.name, email=c.email, notes=c.notes, stage=c.stage,
         tags=sorted(link.tag.name for link in c.tag_links), custom_fields=custom_values(c), memory=c.memory,
         memory_updated_at=c.memory_updated_at, blocked=c.blocked, blocked_reason=c.blocked_reason,
         blocked_at=c.blocked_at, marketing_opt_out=c.marketing_opt_out, created_at=c.created_at,
@@ -63,6 +63,8 @@ def suggestions_out(conv: Conversation) -> dict | None:
 def conversation_out(c: Conversation) -> dict:
     return ConversationOut(
         id=c.id, status=c.status, contact=contact_out(c.contact), channel_id=c.channel_id, ai_agent_id=c.ai_agent_id,
+        channel_provider=c.channel.provider, channel_name=c.channel.name,
+        channel_label=LABELS.get(c.channel.provider, c.channel.provider), window_open=within_session_window(c),
         assigned_agent=AgentOut.model_validate(c.assigned_agent) if c.assigned_agent else None,
         group=GroupOut.model_validate(c.group) if c.group else None,
         handoff_reason=c.handoff_reason, handoff_at=c.handoff_at, first_response_at=c.first_response_at,
@@ -93,15 +95,20 @@ def as_utc(dt: datetime | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
-def within_session_window(conv: Conversation) -> bool:
-    """WhatsApp solo permite mensajes libres hasta 24 h después del último mensaje del cliente."""
+def within_session_window(conv: Conversation, human: bool = True) -> bool:
+    """Ventana de mensajes libres desde el último mensaje del cliente: WhatsApp 24 h; Messenger e Instagram
+    24 h (7 días para respuestas de asesores, etiqueta HUMAN_AGENT); chat web sin límite."""
+    window = window_for(conv.channel.provider, human)
+    if window is None:
+        return True
     last = as_utc(conv.last_inbound_at)
-    return bool(last and datetime.now(UTC) - last < SESSION_WINDOW)
+    return bool(last and datetime.now(UTC) - last < window)
 
 
-async def wa_client(session: AsyncSession, channel: Channel) -> WhatsAppClient:
-    """Cliente de WhatsApp del canal; el token propio del canal vive en Vault."""
-    return WhatsAppClient(channel.phone_number_id, await get_secret(session, channel.access_token_secret_id))
+async def wa_client(session: AsyncSession, channel: Channel, conv: Conversation | None = None):
+    """Cliente del canal (WhatsApp, Messenger, Instagram o chat web); los tokens viven en Vault.
+    El nombre es histórico: devuelve el cliente que corresponda al proveedor del canal (app/channels)."""
+    return await channel_client(session, channel, conv)
 
 
 async def get_message(session: AsyncSession, message_id: int) -> Message | None:
@@ -117,7 +124,7 @@ async def get_conversation(session: AsyncSession, conv_id: int, org: int) -> Con
 async def reload(session: AsyncSession, conv: Conversation) -> Conversation:
     """Relee la conversación y sus relaciones (los triggers cambian columnas en la base)."""
     await session.refresh(conv)
-    for rel in ("contact", "tag_links", "pending_suggestions", "group", "assigned_agent", "typification",
+    for rel in ("contact", "channel", "tag_links", "pending_suggestions", "group", "assigned_agent", "typification",
                 "ai_typification"):
         await session.refresh(conv, [rel])
     await session.refresh(conv.contact, ["field_values", "tag_links"])
@@ -141,15 +148,49 @@ async def commit_and_broadcast(session: AsyncSession, conv: Conversation, event:
 async def get_or_create_contact(session: AsyncSession, org: int, wa_id: str,
                                 profile_name: str | None = None) -> tuple[Contact, bool]:
     contact = await session.scalar(select(Contact).where(Contact.organization_id == org, Contact.wa_id == wa_id))
+    created = contact is None
     if contact:
         if profile_name and not contact.name:
             contact.name = profile_name
-        return contact, False
-    contact = Contact(organization_id=org, wa_id=wa_id, name=profile_name)
+    else:
+        contact = Contact(organization_id=org, wa_id=wa_id, name=profile_name)
+        session.add(contact)
+        await session.flush()
+        await session.refresh(contact, ["field_values", "tag_links"])
+    ident = await session.scalar(select(ContactIdentity).where(
+        ContactIdentity.organization_id == org, ContactIdentity.provider == WHATSAPP,
+        ContactIdentity.external_id == wa_id))
+    if ident is None:
+        session.add(ContactIdentity(organization_id=org, contact_id=contact.id, provider=WHATSAPP, external_id=wa_id))
+    return contact, created
+
+
+async def get_or_create_contact_by_identity(session: AsyncSession, channel: Channel, external_id: str,
+                                            name: str | None = None, username: str | None = None,
+                                            avatar_url: str | None = None,
+                                            profile: dict | None = None) -> tuple[Contact, ContactIdentity, bool]:
+    """Messenger, Instagram y chat web: el contacto se identifica por su id en el canal (PSID, IGSID, visitante)."""
+    ident = await session.scalar(select(ContactIdentity).where(
+        ContactIdentity.channel_id == channel.id, ContactIdentity.external_id == external_id))
+    if ident:
+        contact = await session.get(Contact, ident.contact_id)
+        if name and not contact.name:
+            contact.name = name
+        if avatar_url and not contact.avatar_url:
+            contact.avatar_url = avatar_url
+        if username and not ident.username:
+            ident.username = username
+        return contact, ident, False
+    contact = Contact(organization_id=channel.organization_id, name=name or (f"@{username}" if username else None),
+                      avatar_url=avatar_url)
     session.add(contact)
     await session.flush()
     await session.refresh(contact, ["field_values", "tag_links"])
-    return contact, True
+    ident = ContactIdentity(organization_id=channel.organization_id, contact_id=contact.id, provider=channel.provider,
+                            channel_id=channel.id, external_id=external_id, username=username, profile=profile or {})
+    session.add(ident)
+    await session.flush()
+    return contact, ident, True
 
 
 async def get_or_create_conversation(session: AsyncSession, channel: Channel, contact: Contact,
@@ -181,16 +222,22 @@ async def record_message(session: AsyncSession, conv: Conversation, msg: Message
     await reload(session, conv)
     await hub.broadcast("message.new", message_out(msg), conv.organization_id)
     await broadcast_conversation(conv)
+    if conv.channel.provider == "webchat" and msg.direction == "out":
+        from app.channels.webchat import notify
+
+        notify(conv.id)
     return msg
 
 
 async def send_text(session: AsyncSession, conv: Conversation, text: str, sender_type: str,
                     agent_id: int | None = None, ai_agent_id: int | None = None) -> list[Message]:
-    """Envía texto por WhatsApp (partiéndolo si es largo) y lo registra."""
+    """Envía texto por el canal de la conversación (partiéndolo si es largo) y lo registra."""
     msg = Message(direction="out", sender_type=sender_type, sender_agent_id=agent_id, ai_agent_id=ai_agent_id,
                   type="text", text=text)
     try:
-        ids = await (await wa_client(session, conv.channel)).send_text(conv.contact.wa_id, text)
+        client = await wa_client(session, conv.channel, conv)
+        client.human = sender_type == "agent"  # Messenger/Instagram: HUMAN_AGENT fuera de las 24 h
+        ids = await client.send_text(conv.contact.wa_id, text)
         msg.wa_message_id, msg.status = ids[0], "sent"
     except Exception as e:
         msg.status, msg.error = "failed", str(e)[:2000]
@@ -304,6 +351,7 @@ async def close(session: AsyncSession, conv: Conversation, typification: Typific
         from app.flows.engine import on_event
 
         await on_event(conv.id, "close")
+    __import__("app.quality.hooks", fromlist=["on_close"]).on_close(conv.id)  # QA automático (nunca lanza)
 
 
 # --- Alertas --------------------------------------------------------------------

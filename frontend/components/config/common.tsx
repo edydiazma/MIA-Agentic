@@ -21,6 +21,8 @@ export const CONFIG_TABS = [
   { href: "/configuraciones/atribucion", label: "Atribución web" },
   { href: "/configuraciones/mensajes-disparadores", label: "Mensajes disparadores" },
   { href: "/configuraciones/conversiones", label: "Conversiones" },
+  { href: "/configuraciones/api", label: "API y conectores" },
+  { href: "/configuraciones/notificaciones", label: "Notificaciones" },
   { href: "/configuraciones/plan", label: "Plan y facturación" },
 ];
 

@@ -5,10 +5,25 @@
 {$DOMAIN} {
 	encode zstd gzip
 
-	# API, WebSocket, webhooks (Meta, Stripe, CRM), script de tracking (/t) y salud → backend
-	@backend path /api/* /ws /webhooks/* /t/* /health /docs /openapi.json
+	# API, WebSocket, webhooks (Meta, Stripe, CRM), script de tracking (/t) y salud → réplicas del backend.
+	# /metrics NO se publica: Prometheus / CloudWatch lo leen dentro de la red de Docker.
+	@backend path /api/* /ws /webhooks/* /t/* /w/* /v1/* /health /health/ready /docs /openapi.json
 	handle @backend {
-		reverse_proxy backend:8000
+		reverse_proxy {
+			# Todas las réplicas del servicio "backend" (DNS de Docker; se actualiza al escalar)
+			dynamic a {
+				name backend
+				port 8000
+				refresh 5s
+			}
+			lb_policy least_conn
+			lb_retries 2
+			lb_try_duration 5s
+			# Chequeo pasivo: una réplica que falla se saca 30 s de la rotación
+			fail_duration 30s
+			max_fails 3
+			unhealthy_status 502 503 504
+		}
 	}
 
 	# Todo lo demás → panel (Next.js)

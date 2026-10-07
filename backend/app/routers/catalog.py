@@ -160,7 +160,7 @@ async def import_products(file: UploadFile = File(...), agent: Agent = Depends(r
 
 @router.post("/sync/meta")
 async def sync_meta(agent: Agent = Depends(require_admin), session: AsyncSession = Depends(get_session)):
-    channel = await session.scalar(select(Channel).where(Channel.organization_id == agent.organization_id)
+    channel = await session.scalar(select(Channel).where(Channel.organization_id == agent.organization_id, Channel.provider == "whatsapp_cloud")
                                    .order_by(Channel.id).limit(1))
     if not channel:
         raise HTTPException(422, "Configura un número de WhatsApp primero")

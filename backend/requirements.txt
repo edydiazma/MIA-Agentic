@@ -15,3 +15,7 @@ jsonschema>=4.23
 # Voz: par WebRTC del agente de voz y modelo en tiempo real (se importan solo al atender llamadas)
 aiortc>=1.9
 websockets>=13
+# Operación: errores a Sentry solo si se define SENTRY_DSN (import diferido)
+sentry-sdk>=2.18
+# App del asesor (PWA): Web Push con VAPID
+pywebpush>=2.0

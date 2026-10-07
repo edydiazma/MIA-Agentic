@@ -143,11 +143,13 @@ class Signal:
                 self.values.get("ad_id"), self.values.get("ctwa_clid"))
 
 
-async def detect(session: AsyncSession, org: int, value: str | None, referral: dict | None) -> Signal | None:
+async def detect(session: AsyncSession, org: int, value: str | None, referral: dict | None,
+                 provider: str = "whatsapp_cloud") -> Signal | None:
     if referral:
         ad_id = referral.get("source_id")
         link = await link_by_ad(session, org, ad_id) or await link_by_text(session, org, value)
-        sig = Signal("meta_ctwa", "ctwa_referral", link=link,
+        # Anuncios que abren Messenger o Instagram Direct: el canal es la red; el anuncio queda en ad_id
+        sig = Signal(provider if provider in ("messenger", "instagram") else "meta_ctwa", "ctwa_referral", link=link,
                      values={"ctwa_clid": referral.get("ctwa_clid"), "ad_id": ad_id,
                              "landing_url": referral.get("source_url")})
         if link:
@@ -177,13 +179,16 @@ async def detect(session: AsyncSession, org: int, value: str | None, referral: d
     return None
 
 
-async def _first_without_signal(session: AsyncSession, conv: Conversation) -> Signal:
+async def _first_without_signal(session: AsyncSession, conv: Conversation,
+                                provider: str = "whatsapp_cloud") -> Signal:
     last_out = (await session.scalars(
         select(Message).where(Message.conversation_id == conv.id, Message.direction == "out",
                               Message.sender_type != "system").order_by(Message.created_at.desc()).limit(1))).first()
     if last_out is not None and (last_out.campaign_id or last_out.sender_type == "campaign"):
         return Signal("campaign", "campaign",
                       values={"utm_campaign": f"campaign:{last_out.campaign_id}" if last_out.campaign_id else None})
+    if provider in ("messenger", "instagram", "webchat"):
+        return Signal(provider, "none")  # llegó por el canal sin anuncio ni enlace rastreado
     return Signal("direct", "none")
 
 
@@ -233,16 +238,20 @@ async def attribute(session: AsyncSession, conv: Conversation, value: str | None
     return attr
 
 
-async def on_inbound(session: AsyncSession, conv: Conversation, msg: Message, raw_message: dict) -> WaLink | None:
+async def on_inbound(session: AsyncSession, conv: Conversation, msg: Message, raw_message: dict,
+                     provider: str = "whatsapp_cloud") -> WaLink | None:
     """Hook de ingest para cada mensaje entrante. Devuelve el enlace (mensaje disparador) que trajo este mensaje,
     para que el motor de flujos inicie el flujo del enlace; None si el mensaje no trae una señal nueva."""
     org = conv.organization_id
-    sig = await detect(session, org, msg.text or msg.transcript, raw_message.get("referral"))
+    value = msg.text or msg.transcript
+    if raw_message.get("ref_code"):  # chat web: el widget envía el código de la visita (script de tracking)
+        value = f"{value or ''} (ref: {raw_message['ref_code']})"
+    sig = await detect(session, org, value, raw_message.get("referral"), provider)
     attr = (await session.scalars(select(Attribution).where(Attribution.conversation_id == conv.id))).first()
     now = utcnow()
 
     if attr is None:
-        sig = sig or await _first_without_signal(session, conv)
+        sig = sig or await _first_without_signal(session, conv, provider)
         attr = Attribution(organization_id=org, conversation_id=conv.id, contact_id=conv.contact_id, touches=1,
                            last_touch_at=now)
         _apply(attr, sig)

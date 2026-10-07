@@ -12,7 +12,7 @@ export default function DealsSection({
   conversationId,
   heading = "h3",
 }: {
-  contact: { id: number; name: string | null; wa_id: string };
+  contact: { id: number; name: string | null; wa_id: string | null };
   conversationId?: number | null;
   heading?: "h2" | "h3";
 }) {

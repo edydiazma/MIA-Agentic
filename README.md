@@ -8,7 +8,8 @@ reports, on **Supabase** (Postgres + Realtime + Storage + Vault + cron).
 |---|---|
 | [`docs/data-model.md`](docs/data-model.md) | Data model (**mandatory rule: every feature starts here**) |
 | [`docs/flows.md`](docs/flows.md) | Flow JSON format, block catalog, execution |
-| [`deploy/README.md`](deploy/README.md) | Deploying to AWS EC2 (Docker Compose + Caddy HTTPS) |
+| [`deploy/README.md`](deploy/README.md) | Deploying to AWS EC2 (Docker Compose + Caddy HTTPS, API replicas + worker, CI/CD) |
+| [`docs/api.md`](docs/api.md) | Public API `/v1`, scopes, webhooks and connectors |
 
 ## Modules
 
@@ -26,6 +27,10 @@ reports, on **Supabase** (Postgres + Realtime + Storage + Vault + cron).
 | **Llamadas** | WhatsApp calls: AI voice agent with transfer, answering from the browser, transcripts, recordings, summaries |
 | **Atribución** | Web script/GTM (`/t/<key>.js`) with a code in wa.me links, Click to WA Meta and Google, conversions to Google Ads and Meta CAPI |
 | **SaaS** | Signup with a trial, Team / Profesional / Enterprise plans with limits, Stripe, company switching, back-office at `/plataforma` |
+| **Mensajes disparadores** | Trigger texts with short tracked links (`/t/l/{slug}`) or wa.me for Click to WhatsApp ads; multi-touch attribution; campaign/ad names from Meta and Google Ads; attribution pushed to HubSpot / Salesforce |
+| **Omnicanal** | Instagram DM, Facebook Messenger and a web chat widget (`/w/{key}.js`) in the same inbox, flows and AI agents |
+| **Calidad (QA) y coaching** | AI review of closed conversations against rubrics, human review and disputes, coaching per advisor ("Mi coaching"), automated tests for AI agents |
+| **API pública** | `/v1` with API keys and scopes, rate limits, idempotency, REST Hooks for Zapier / Make / n8n (`docs/api.md`); installable advisor app (PWA) with push notifications |
 | **Seguimiento / Configuraciones** | Follow-ups, appointments; platform, messaging, conversations, AI classification, client fields, users, company, resources, appointments |
 
 ## Architecture
@@ -50,7 +55,7 @@ Requirements: Python 3.13+, Node 22+, Postgres 17 (Homebrew `postgresql@17`) for
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 cp .env.example .env     # DATABASE_URL → your Supabase project (Session pooler) or a local Postgres with the migrations
-.venv/bin/python -m pytest          # builds a temporary Postgres from supabase/migrations and runs the 57 tests
+.venv/bin/python -m pytest          # builds a temporary Postgres from supabase/migrations and runs the 85 tests
 .venv/bin/python -m app.demo        # (optional) demo data — dev environments only
 .venv/bin/uvicorn app.main:app --reload --port 8000
 

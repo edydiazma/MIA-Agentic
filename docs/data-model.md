@@ -285,6 +285,68 @@ erDiagram
 - Flows: new trigger block `wa_link` ("Cuando llega por un mensaje disparador", optional list of link slugs/names);
   `wa_links.flow_id` starts that flow directly.
 
+## 12. Phase 4: scale, omnichannel, AI quality, public API
+
+### 12.1 Scale and production (migration 17)
+
+- **Live events across replicas:** each backend replica keeps its WebSockets; events are published with Postgres
+  `NOTIFY wa_events` (payload ≤ ~7.5 KB: `{org, event, data}`) and every replica `LISTEN`s and forwards to its own
+  sockets of that organization. Larger payloads go to `realtime_spill` (UNLOGGED, purged after 10 min) and the
+  notification carries only its id. LISTEN needs a session connection (Supabase **Session pooler**, not the
+  transaction pooler).
+- **Workers:** `ROLE=api|worker|all`. Background loops run only in `worker`/`all`; each loop holds a Postgres
+  advisory lock, so N worker replicas run each loop once. `worker_heartbeats` (one row per process: role, version,
+  per-loop last success/error) feeds `/health/ready` and the back-office.
+- **Rate limits:** `rate_limit_counters` (UNLOGGED, fixed windows) + `rate_limit_hit(bucket, window_s)` shared by
+  all replicas (public API keys, `/t/*` tracking, web chat).
+- `ops_cleanup()` every 10 minutes (pg_cron).
+
+### 12.2 Omnichannel: Instagram DM, Messenger, web chat (migration 18)
+
+- `channels.provider`: `whatsapp_cloud | messenger | instagram | webchat`; `phone_number_id` only required for
+  WhatsApp; `external_id` (page id, IG professional account id, widget key) unique per provider; `page_id`
+  (Messenger and Instagram send with the Page token), `settings` (web chat look, greeting, allowed domains),
+  `status`/`last_error`.
+- `contacts.wa_id` is now nullable; **`contact_identities`** is the entry key per channel (`wa_id`, PSID, IGSID,
+  web-chat visitor id), with `username`, `profile` and `last_inbound_at` (24 h window per channel). WhatsApp ids
+  are unique per organization, the others per channel (page-scoped). Existing contacts got their WhatsApp identity.
+- `messages.wa_message_id` / `message_wa_ids` hold the **provider message id** of any channel (Meta `mid`,
+  web-chat uuid); the name is historical.
+- `webchat_sessions`: widget visitor (token hash, page, contact, conversation, tracking `ref_code` for attribution).
+- `attributions.channel` adds `instagram`, `messenger`, `webchat`.
+- `reporting.daily_channels`: conversations, inbound/outbound messages and new contacts per channel and day.
+- Plan feature `omnichannel` (Profesional and Enterprise).
+- `inbound_events.source` also accepts `messenger` and `instagram` (migration `20261011000500`).
+
+### 12.3 AI quality and coaching (migration 19)
+
+- `qa_scorecards`: rubric (`criteria`: key, label, description, weight, critical), who it applies to
+  (`agent | bot | any`), auto review on close with sampling, minimum messages and groups.
+- `conversation_reviews`: one AI review per conversation and scorecard (unique) plus any human reviews: per-criterion
+  scores with evidence, weighted `total_score`, `critical_failed`, sentiment (+score), customer effort (1–5),
+  summary, `ai_call_id`; `disputed` when the advisor contests it. Updates `conversations.qa_score` and
+  `conversations.ai_sentiment` (`mixed` → `neutral`).
+- `coaching_items`: actionable suggestions per advisor (from reviews), with status.
+- `agent_test_suites` / `agent_test_cases` (input turns + expectations: must/must-not include, handoff, tool,
+  rubric for an LLM judge) / `agent_test_runs` (pass %, cost, the `config_revisions` row tested) /
+  `agent_test_results`. Suites can run on every change of the AI agent.
+- `reporting.daily_qa`: reviews, score sum, critical failures and sentiment per advisor (0 = bot) and day.
+- Plan feature `qa` (Profesional and Enterprise).
+- AI purposes `qa` (reviews) and `agent_test` (agent tests and their LLM judge) in `ai_calls` and `cortexes` (migration `20261011000600_quality_purposes`), so their cost and health are reported separately and they can have their own Cortex.
+
+### 12.4 Public API, connectors and advisor app (migration 20)
+
+- `api_keys`: only the SHA-256 is stored; visible `prefix`; `scopes`; per-key rate limit; expiry/revocation.
+- `api_requests` (**partitioned**, ~1 month): method, templated path, status, latency, key → audit and
+  `reporting.daily_api` (requests, errors, 429s, p95).
+- `api_idempotency`: `Idempotency-Key` on POST, 24 h.
+- `outbound_webhooks.source` (`panel | api | zapier | make | n8n`) + `api_key_id`: REST Hooks subscriptions of
+  connectors are ordinary outbound webhooks (deleted with their key).
+- `push_subscriptions`: Web Push (VAPID) of the installable advisor app with per-agent preferences.
+- `refresh_range` = core + flows + links + channels + qa + api.
+- Migration 20b (`20261011000700_api_sources`): origin `api` for `conversation_events.actor_type`, `deals.source`
+  and `contact_tags.source` (`contact_changes`/`contact_field_values` already accepted it). Guide: `docs/api.md`.
+
 ## 11. Feature log (data-model changes)
 
 | Date | Feature | Model change |
@@ -297,6 +359,8 @@ erDiagram
 | 2026-10-07 | Backend moved onto the Supabase model | The ORM mirrors the migrations (`test_schema`); 37 tests on real Postgres; storage in Supabase Storage; secrets in Vault |
 | 2026-10-07 | Flow engine | No schema changes: uses `flows`, `flow_versions`, `flow_runs` (`context` = variables + resumable execution stack), `flow_run_steps`. Shared block catalog `blocks.json` |
 | 2026-10-08 | Phase 2 (model) | Attribution, CRM, voice and SaaS: migrations 11–14 (section 10) |
+| 2026-10-11 | Public API `/v1` + advisor PWA | Migration 20b: origin `api` (actor and sources) |
+| 2026-10-11 | Phase 4 model: scale, omnichannel, AI quality, public API | Migrations 17–20 (§12): `worker_heartbeats`, `realtime_spill`, `rate_limit_counters`; `contact_identities`, `webchat_sessions`, channel providers, `contacts.wa_id` nullable; `qa_scorecards`, `conversation_reviews`, `coaching_items`, `agent_test_*`; `api_keys`, `api_requests` (partitioned), `api_idempotency`, `push_subscriptions`; rollups `daily_channels`, `daily_qa`, `daily_api` |
 | 2026-10-10 | Trigger messages + multi-touch attribution + ad/CRM alignment | Migration 16 (§10.5): `wa_links`, `attribution_touches` (partitioned), `ad_entities`, `reporting.daily_links`; `attributions` +link/enriched names/touches; `web_sessions.link_id`, `site_id` nullable; channel `offline` |
 | 2026-10-09 | Reportes → Análisis de flujos | Migration 15: `flow_run_steps.organization_id/flow_id` (+ index, RLS `org_read`), `reporting.daily_flows`, `daily_flow_blocks`, `daily_flow_choices`, `reporting.refresh_flows`; `refresh_range` now wraps `refresh_core` + `refresh_flows` |
 | 2026-10-09 | Centro de Control → Integraciones | No schema change: the card reads `integration_connections` (phase 2) instead of the legacy `integrations` table |

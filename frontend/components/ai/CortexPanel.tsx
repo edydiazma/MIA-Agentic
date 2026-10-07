@@ -28,6 +28,8 @@ const PURPOSE_LABEL: Record<CortexPurpose, string> = {
   learning: "Aprendizaje",
   flow: "Flujos",
   json_edit: "Edición JSON",
+  qa: "Calidad (QA)",
+  agent_test: "Pruebas de agentes",
 };
 
 const EMPTY: CortexIn = {

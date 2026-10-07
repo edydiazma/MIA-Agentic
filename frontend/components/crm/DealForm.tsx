@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { contactLabel, qs, send, type AgentDetail, type Contact } from "@/lib/api";
+import { contactLabel, qs, send, type AgentDetail, type Contact, phoneLabel } from "@/lib/api";
 import type { Deal, PipelinesConfig } from "@/lib/crm-types";
 import { ErrorBox, Field, Modal, useAction, useApi } from "@/components/ui";
 
@@ -15,7 +15,7 @@ export default function DealForm({
   onSaved,
 }: {
   deal?: Deal | null;
-  contact?: { id: number; name: string | null; wa_id: string } | null;
+  contact?: { id: number; name: string | null; wa_id: string | null } | null;
   conversationId?: number | null;
   pipeline?: string;
   onClose: () => void;
@@ -97,7 +97,7 @@ export default function DealForm({
               <input autoFocus placeholder="Buscar por nombre o teléfono…" value={q} onChange={(e) => setQ(e.target.value)} />
               {(contacts.data?.items ?? []).map((c) => (
                 <button key={c.id} className="link small" style={{ textAlign: "left" }} onClick={() => setPicked(c)}>
-                  {contactLabel(c)} <span className="muted">+{c.wa_id}</span>
+                  {contactLabel(c)} <span className="muted">{phoneLabel(c.wa_id)}</span>
                 </button>
               ))}
             </div>

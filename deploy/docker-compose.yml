@@ -1,19 +1,43 @@
-# Producción en una instancia AWS EC2: Caddy (HTTPS automático) + backend + frontend.
+# Producción en una instancia AWS EC2: Caddy (HTTPS automático) + backend (réplicas) + worker + frontend.
 # La base de datos, Storage, Realtime, Vault y cron viven en Supabase (no hay Postgres aquí).
 #
 #   cd deploy && cp .env.example .env   # completar
-#   docker compose up -d --build
+#   docker compose up -d --build        # BACKEND_REPLICAS (por defecto 2) réplicas de la API + 1 worker
+#   ./update.sh                         # actualización escalonada (worker primero, luego la API réplica por réplica)
+#
+# Una sola imagen para backend y worker: cambia solo ROLE (docs/data-model.md §12.1).
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "20m", max-file: "5" }
+
+x-backend: &backend
+  build: ../backend
+  image: wa-agent-backend:latest
+  env_file: .env
+  restart: unless-stopped
+  logging: *logging
+
 services:
+  # API: HTTP + WebSocket. Sin estado propio: los eventos en vivo viajan entre réplicas por LISTEN/NOTIFY,
+  # así que se puede escalar (BACKEND_REPLICAS o `docker compose up -d --scale backend=3`).
   backend:
-    build: ../backend
-    env_file: .env
+    <<: *backend
     environment:
+      ROLE: api
       CORS_ORIGINS: https://${DOMAIN}
-    restart: unless-stopped
+      APP_VERSION: ${APP_VERSION:-dev}
     expose: ["8000"]
-    logging: &logging
-      driver: json-file
-      options: { max-size: "20m", max-file: "5" }
+    deploy:
+      replicas: ${BACKEND_REPLICAS:-2}
+
+  # Tareas de fondo (flujos, inactividad, conversiones, CRM, catálogo, enriquecimiento...). Cada tarea corre una
+  # sola vez en el clúster (advisory lock): una segunda réplica del worker queda en espera como respaldo.
+  worker:
+    <<: *backend
+    environment:
+      ROLE: worker
+      APP_VERSION: ${APP_VERSION:-dev}
+    expose: ["8000"]
 
   frontend:
     build:

@@ -15,6 +15,7 @@ import {
   type Conversation,
   type FollowUp,
   type Stage,
+  phoneLabel,
 } from "@/lib/api";
 import { Badge, ErrorBox, Field, Loading, Modal, useAction, useApi } from "@/components/ui";
 import CustomFieldsEditor from "@/components/fields/CustomFieldsEditor";
@@ -119,7 +120,7 @@ export default function ContactDetail({
       {data && (
         <>
           <div className="inline">
-            <span className="muted">+{data.wa_id}</span>
+            <span className="muted">{phoneLabel(data.wa_id)}</span>
             {data.marketing_opt_out && <Badge tone="warn">No acepta marketing</Badge>}
             <span className="muted small">Cliente desde {fmtDateTime(data.created_at)}</span>
           </div>

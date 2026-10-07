@@ -8,7 +8,7 @@ from app import storage, templates
 from app.auth import current_agent
 from app.campaigns import send_template_message
 from app.db import get_session, set_actor
-from app.models import Agent, Contact, Conversation, ConversationTag, Group, Message, Resource, Tag
+from app.models import Agent, Channel, Contact, ContactIdentity, Conversation, ConversationTag, Group, Message, Resource, Tag
 from app.schemas import SendText
 from app.service import (
     commit_and_broadcast,
@@ -60,9 +60,13 @@ async def _conversation(session: AsyncSession, conv_id: int, agent: Agent) -> Co
 
 
 def _require_window(conv: Conversation) -> None:
-    if not within_session_window(conv):
+    if within_session_window(conv, human=True):
+        return
+    if conv.channel.provider == "whatsapp_cloud":
         raise HTTPException(
             409, "Pasaron más de 24 h desde el último mensaje del cliente: WhatsApp solo permite plantillas aprobadas.")
+    raise HTTPException(409, "Pasaron más de 7 días desde el último mensaje del cliente: Messenger e Instagram no "
+                             "permiten escribirle hasta que vuelva a escribir.")
 
 
 async def _take(session: AsyncSession, conv: Conversation, agent: Agent) -> None:
@@ -81,6 +85,7 @@ async def list_conversations(
     group_id: int | None = None,
     tag: str | None = None,
     q: str | None = None,
+    channel: str | None = Query(default=None, pattern="^(whatsapp_cloud|messenger|instagram|webchat)$"),
     limit: int = Query(default=100, le=500),
     agent: Agent = Depends(current_agent),
     session: AsyncSession = Depends(get_session),
@@ -107,8 +112,13 @@ async def list_conversations(
             Tag.organization_id == org, Tag.name == tag.strip().lower()))
     if q:
         like = f"%{q.strip()}%"
-        stmt = stmt.where(exists().where(Contact.id == Conversation.contact_id,
-                                         or_(Contact.name.ilike(like), Contact.wa_id.ilike(like))))
+        stmt = stmt.where(or_(
+            exists().where(Contact.id == Conversation.contact_id,
+                           or_(Contact.name.ilike(like), Contact.wa_id.ilike(like), Contact.email.ilike(like))),
+            exists().where(ContactIdentity.contact_id == Conversation.contact_id,
+                           or_(ContactIdentity.username.ilike(like), ContactIdentity.external_id.ilike(like)))))
+    if channel:
+        stmt = stmt.where(exists().where(Channel.id == Conversation.channel_id, Channel.provider == channel))
     stmt = stmt.order_by(Conversation.last_message_at.desc()).limit(limit)
     return [conversation_out(c) for c in (await session.scalars(stmt)).unique().all()]
 
@@ -153,7 +163,8 @@ async def _send_file(session: AsyncSession, conv: Conversation, agent: Agent, da
     msg = Message(direction="out", sender_type="agent", sender_agent_id=agent.id, type=kind, text=caption,
                   media_path=path, media_mime=mime, media_filename=filename, media_size=len(data))
     try:
-        client = await wa_client(session, conv.channel)
+        client = await wa_client(session, conv.channel, conv)
+        client.human = True
         media_id = await client.upload_media(data, mime, filename)
         msg.wa_message_id = await client.send_media(conv.contact.wa_id, kind, media_id, caption, filename)
         msg.status = "sent"
@@ -197,6 +208,8 @@ async def send_template(conv_id: int, body: TemplateIn, agent: Agent = Depends(c
                         session: AsyncSession = Depends(get_session)):
     """Plantilla individual: permite escribir fuera de la ventana de 24 h."""
     conv = await _conversation(session, conv_id, agent)
+    if conv.channel.provider != "whatsapp_cloud":
+        raise HTTPException(409, "Las plantillas son solo de WhatsApp")
     catalog = await templates.list_templates(session, conv.channel)
     tpl = next((t for t in catalog if t["name"] == body.name and t["language"] == body.language), None)
     if not tpl or tpl["status"] != "APPROVED":

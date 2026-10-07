@@ -2,7 +2,16 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { api, qs, type AgentDetail, type Contact, type Conversation, type Group, type Message } from "@/lib/api";
+import {
+  api,
+  qs,
+  type AgentDetail,
+  type ChannelProvider,
+  type Contact,
+  type Conversation,
+  type Group,
+  type Message,
+} from "@/lib/api";
 import { useRealtime } from "@/lib/realtime";
 import { useMe } from "@/components/Shell";
 import { useApi } from "@/components/ui";
@@ -22,6 +31,7 @@ function Inbox() {
   const [query, setQuery] = useState("");
   const [groupId, setGroupId] = useState<number | null>(null);
   const [actAs, setActAs] = useState<number | null>(null);
+  const [channel, setChannel] = useState<ChannelProvider | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(() => {
     const id = Number(params.get("id"));
@@ -45,8 +55,9 @@ function Inbox() {
       agent_id: actAs ?? undefined,
       group_id: groupId ?? undefined,
       q: query.trim() || undefined,
+      channel: channel ?? undefined,
     })}`;
-  }, [filter, actAs, groupId, query]);
+  }, [filter, actAs, groupId, query, channel]);
 
   const loadList = useCallback(async () => {
     setConversations(await api<Conversation[]>(listPath));
@@ -61,11 +72,12 @@ function Inbox() {
   const matches = useCallback(
     (c: Conversation) => {
       if (groupId && c.group?.id !== groupId) return false;
+      if (channel && c.channel_provider !== channel) return false;
       const owner = actAs ?? (filter === "mine" ? me?.id : undefined);
       if (owner !== undefined && c.assigned_agent?.id !== owner) return false;
       if (query.trim()) {
         const q = query.trim().toLowerCase();
-        if (!(c.contact.name ?? "").toLowerCase().includes(q) && !c.contact.wa_id.includes(q)) return false;
+        if (!(c.contact.name ?? "").toLowerCase().includes(q) && !(c.contact.wa_id ?? "").includes(q)) return false;
       }
       switch (filter) {
         case "open":
@@ -80,7 +92,7 @@ function Inbox() {
           return true;
       }
     },
-    [filter, groupId, actAs, query, me?.id],
+    [filter, groupId, actAs, query, channel, me?.id],
   );
 
   const upsertConversation = useCallback(
@@ -164,6 +176,8 @@ function Inbox() {
           agents={agents.data ?? []}
           actAs={actAs}
           onActAs={setActAs}
+          channel={channel}
+          onChannel={setChannel}
         />
         {selected ? (
           <>

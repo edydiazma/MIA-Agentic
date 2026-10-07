@@ -35,7 +35,7 @@ METRIC_LABELS = {
 }
 FEATURE_LABELS = {"flows": "Flujos", "voice": "Llamadas y agentes de voz", "crm": "Integraciones CRM",
                   "attribution": "Atribución y conversiones", "api": "API y webhooks", "seller": "Mejor vendedor",
-                  "memory": "Memoria del negocio"}
+                  "memory": "Memoria del negocio", "qa": "Calidad y coaching", "omnichannel": "Omnicanal"}
 
 
 async def check_limit(session: AsyncSession, org: int, metric: str) -> dict:

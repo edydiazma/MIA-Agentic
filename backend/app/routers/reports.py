@@ -106,7 +106,8 @@ async def control_center(agent: Agent = Depends(current_agent), session: AsyncSe
     opt_out_7 = await session.scalar(select(func.count()).where(opt, Contact.opt_out_at >= week)) or 0
     opt_out_prev = await session.scalar(
         select(func.count()).where(opt, Contact.opt_out_at >= prev_week, Contact.opt_out_at < week)) or 0
-    channels = (await session.scalars(select(Channel).where(Channel.organization_id == org))).unique().all()
+    channels = (await session.scalars(select(Channel).where(Channel.organization_id == org,
+                                                            Channel.provider == "whatsapp_cloud"))).unique().all()
     template_total = await session.scalar(
         select(func.count()).where(WaTemplate.organization_id == org, WaTemplate.status == "APPROVED"))
     template_alerts = len({a.ref for a in alerts if a.layer == "template"})
@@ -346,6 +347,7 @@ async def click_to_whatsapp(start: date | None = None, end: date | None = None, 
                count(*) filter (where c.handoff_at is not null)::int as handoffs,
                count(*) filter (where t.is_success)::int as sales
         from public.conversations c left join public.typifications t on t.id = c.typification_id
+        join public.channels ch on ch.id = c.channel_id and ch.provider = 'whatsapp_cloud'  -- Messenger/IG: Canales
         where c.organization_id = :o and c.ad_source_type is not null and c.last_message_at >= :lo and c.created_at < :hi
         group by c.ad_source_id order by 5 desc""", o=org, lo=lo, hi=hi)
     return {"total": sum(r["conversations"] for r in rows),

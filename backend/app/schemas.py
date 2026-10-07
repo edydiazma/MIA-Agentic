@@ -56,7 +56,8 @@ class GroupOut(ORM):
 
 class ContactOut(BaseModel):
     id: int
-    wa_id: str
+    wa_id: str | None  # null: contacto sin WhatsApp (Instagram, Messenger, chat web)
+    avatar_url: str | None = None
     name: str | None
     email: str | None = None
     notes: str | None = None
@@ -87,6 +88,10 @@ class ConversationOut(BaseModel):
     status: str
     contact: ContactOut
     channel_id: int
+    channel_provider: str = "whatsapp_cloud"
+    channel_name: str | None = None
+    channel_label: str | None = None
+    window_open: bool = True  # se puede escribir libremente (si no: plantilla en WhatsApp)
     ai_agent_id: int | None = None
     assigned_agent: AgentOut | None
     group: GroupOut | None

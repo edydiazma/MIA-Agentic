@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  CHANNEL_ICONS,
+  CHANNEL_LABELS,
   STATUS_LABEL,
   api,
   contactLabel,
@@ -109,7 +111,11 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
     setText("");
   }, [c.id]);
 
-  const windowOpen = !!c.last_inbound_at && Date.now() - new Date(c.last_inbound_at).getTime() < 24 * 3600 * 1000;
+  // Ventana de respuesta libre de un asesor: WhatsApp 24 h; Messenger e Instagram 7 días (HUMAN_AGENT); chat web siempre
+  const isWhatsApp = c.channel_provider === "whatsapp_cloud";
+  const windowMs = c.channel_provider === "webchat" ? Infinity : (isWhatsApp ? 24 : 7 * 24) * 3600 * 1000;
+  const windowOpen =
+    windowMs === Infinity || (!!c.last_inbound_at && Date.now() - new Date(c.last_inbound_at).getTime() < windowMs);
 
   const slash = text.startsWith("/") && !text.includes(" ") ? text.slice(1).toLowerCase() : null;
   const suggestions = slash === null ? [] : (quick.data ?? []).filter((q) => q.shortcut.includes(slash)).slice(0, 8);
@@ -162,7 +168,11 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
             ←
           </button>
           <div style={{ minWidth: 0 }}>
-            <strong>{contactLabel(c.contact)}</strong> <span className="muted">+{c.contact.wa_id}</span>
+            <strong>{contactLabel(c.contact)}</strong>{" "}
+            <span className="muted">
+              {CHANNEL_ICONS[c.channel_provider]}{" "}
+              {isWhatsApp ? `+${c.contact.wa_id}` : `${CHANNEL_LABELS[c.channel_provider]}${c.channel_name ? ` · ${c.channel_name}` : ""}`}
+            </span>
             <div className="small">
               <span className={`status ${c.status}`}>{STATUS_LABEL[c.status]}</span>
               {c.group && <span className="muted"> · {c.group.name}</span>}
@@ -204,12 +214,21 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
 
       {error && <div className="error bar">{error}</div>}
       {!windowOpen ? (
-        <div className="notice row">
-          <span>Pasaron más de 24 h desde el último mensaje del cliente. WhatsApp solo permite plantillas aprobadas.</span>
-          <button className="primary" onClick={() => setModal("template")}>
-            Enviar plantilla
-          </button>
-        </div>
+        isWhatsApp ? (
+          <div className="notice row">
+            <span>Pasaron más de 24 h desde el último mensaje del cliente. WhatsApp solo permite plantillas aprobadas.</span>
+            <button className="primary" onClick={() => setModal("template")}>
+              Enviar plantilla
+            </button>
+          </div>
+        ) : (
+          <div className="notice row">
+            <span>
+              Pasaron más de 7 días desde el último mensaje del cliente: {CHANNEL_LABELS[c.channel_provider]} no permite
+              escribirle hasta que vuelva a escribir.
+            </span>
+          </div>
+        )
       ) : (
         <form className="composer" onSubmit={sendText}>
           {suggestions.length > 0 && (
@@ -235,9 +254,11 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
           <button type="button" title="Recursos" disabled={busy} onClick={() => setModal("resource")}>
             📁
           </button>
-          <button type="button" title="Plantilla" disabled={busy} onClick={() => setModal("template")}>
-            Plantilla
-          </button>
+          {isWhatsApp && (
+            <button type="button" title="Plantilla" disabled={busy} onClick={() => setModal("template")}>
+              Plantilla
+            </button>
+          )}
           <input
             ref={fileInput}
             type="file"

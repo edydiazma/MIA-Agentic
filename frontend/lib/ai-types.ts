@@ -50,7 +50,7 @@ export type AIConnectionIn = Omit<AIConnection, "id" | "has_api_key" | "health">
 };
 
 export type CortexStrategy = "failover" | "lowest_latency" | "weighted";
-export type CortexPurpose = "chat" | "classification" | "learning" | "flow" | "json_edit" | "any";
+export type CortexPurpose = "chat" | "classification" | "learning" | "flow" | "json_edit" | "qa" | "agent_test" | "any";
 export type CortexMember = {
   connection_id: number;
   position: number;

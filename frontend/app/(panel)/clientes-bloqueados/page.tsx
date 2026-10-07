@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { contactLabel, qs, send, timeAgo, type Contact } from "@/lib/api";
+import { contactLabel, qs, send, timeAgo, type Contact, phoneLabel } from "@/lib/api";
 import { Card, Empty, ErrorBox, Loading, PageHeader, useAction, useApi } from "@/components/ui";
 
 export default function ClientesBloqueadosPage() {
@@ -49,7 +49,7 @@ export default function ClientesBloqueadosPage() {
                 {list.data.items.map((c) => (
                   <tr key={c.id}>
                     <td className="strong">{contactLabel(c)}</td>
-                    <td className="nowrap">+{c.wa_id}</td>
+                    <td className="nowrap">{phoneLabel(c.wa_id)}</td>
                     <td>{c.blocked_reason ?? <span className="muted">—</span>}</td>
                     <td className="nowrap">{timeAgo(c.blocked_at)}</td>
                     <td className="right">

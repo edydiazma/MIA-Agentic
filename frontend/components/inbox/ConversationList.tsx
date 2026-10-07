@@ -1,6 +1,15 @@
 "use client";
 
-import { STATUS_LABEL, contactLabel, type AgentDetail, type Conversation, type Group } from "@/lib/api";
+import {
+  CHANNEL_ICONS,
+  CHANNEL_LABELS,
+  STATUS_LABEL,
+  contactLabel,
+  type AgentDetail,
+  type ChannelProvider,
+  type Conversation,
+  type Group,
+} from "@/lib/api";
 
 export type Filter = "open" | "unassigned" | "human" | "bot" | "mine" | "closed";
 
@@ -36,6 +45,8 @@ type Props = {
   agents: AgentDetail[];
   actAs: number | null;
   onActAs: (id: number | null) => void;
+  channel: ChannelProvider | null;
+  onChannel: (c: ChannelProvider | null) => void;
 };
 
 export default function ConversationList(p: Props) {
@@ -43,7 +54,7 @@ export default function ConversationList(p: Props) {
   return (
     <aside className="list">
       <div className="list-tools">
-        <input placeholder="Buscar nombre o teléfono" value={p.query} onChange={(e) => p.onQuery(e.target.value)} />
+        <input placeholder="Buscar nombre, teléfono o @usuario" value={p.query} onChange={(e) => p.onQuery(e.target.value)} />
         <div className="chips">
           {FILTERS.map(([f, label]) => (
             <button key={f} className={p.filter === f ? "chip active" : "chip"} onClick={() => p.onFilter(f)}>
@@ -61,6 +72,18 @@ export default function ConversationList(p: Props) {
             {p.groups.map((g) => (
               <option key={g.id} value={g.id}>
                 {g.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={p.channel ?? ""}
+            onChange={(e) => p.onChannel((e.target.value || null) as ChannelProvider | null)}
+            aria-label="Canal"
+          >
+            <option value="">Todos los canales</option>
+            {(Object.keys(CHANNEL_LABELS) as ChannelProvider[]).map((k) => (
+              <option key={k} value={k}>
+                {CHANNEL_LABELS[k]}
               </option>
             ))}
           </select>
@@ -96,7 +119,12 @@ export default function ConversationList(p: Props) {
         {p.conversations.map((c) => (
           <li key={c.id} className={c.id === p.selectedId ? "selected" : ""} onClick={() => p.onSelect(c.id)}>
             <div className="row">
-              <span className="name preview">{contactLabel(c.contact)}</span>
+              <span className="name preview">
+                <span title={c.channel_name ?? CHANNEL_LABELS[c.channel_provider]} aria-label={CHANNEL_LABELS[c.channel_provider]}>
+                  {CHANNEL_ICONS[c.channel_provider] ?? ""}
+                </span>{" "}
+                {contactLabel(c.contact)}
+              </span>
               <span className="muted small nowrap">{time(c.last_message_at)}</span>
             </div>
             <div className="row">

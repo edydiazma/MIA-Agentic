@@ -145,8 +145,8 @@ class Channel(Base):
     id: Mapped[int] = pk()
     organization_id: Mapped[int] = org_fk()
     name: Mapped[str] = mapped_column(Text)
-    provider: Mapped[str] = mapped_column(Text, default="whatsapp_cloud")
-    phone_number_id: Mapped[str] = mapped_column(Text)
+    provider: Mapped[str] = mapped_column(Text, default="whatsapp_cloud")  # whatsapp_cloud|messenger|instagram|webchat
+    phone_number_id: Mapped[str | None] = mapped_column(Text, nullable=True)  # solo WhatsApp
     waba_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     display_phone: Mapped[str | None] = mapped_column(Text, nullable=True)
     access_token_secret_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
@@ -155,6 +155,12 @@ class Channel(Base):
     calling_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     calling_hours: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     voice_agent_id: Mapped[int | None] = fk("voice_agents.id")
+    # Omnicanal (migración 18)
+    external_id: Mapped[str | None] = mapped_column(Text, nullable=True)  # page id / IG account id / widget key
+    page_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    settings: Mapped[dict] = mapped_column(JSONB, default=dict)
+    status: Mapped[str] = mapped_column(Text, default="active")  # active | disconnected | error
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = ts(default=utcnow)
     updated_at: Mapped[datetime] = ts(default=utcnow)
 
@@ -166,7 +172,8 @@ class Contact(Base):
 
     id: Mapped[int] = pk()
     organization_id: Mapped[int] = org_fk()
-    wa_id: Mapped[str] = mapped_column(Text)
+    wa_id: Mapped[str | None] = mapped_column(Text, nullable=True)  # null: contacto sin WhatsApp (IG, Messenger, web)
+    avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     email: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -321,6 +328,7 @@ class Conversation(Base):
     ad_ctwa_clid: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     ai_sentiment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    qa_score: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)  # última revisión de calidad
     ai_typification_id: Mapped[int | None] = fk("typifications.id")
     ai_classified_at: Mapped[datetime | None] = ts(nullable=True)
     ai_inbound_mark: Mapped[int] = mapped_column(Integer, default=0)
@@ -905,6 +913,8 @@ class OutboundWebhook(Base):
     last_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_delivery_at: Mapped[datetime | None] = ts(nullable=True)
+    source: Mapped[str] = mapped_column(Text, default="panel")  # panel | api | zapier | make | n8n
+    api_key_id: Mapped[int | None] = fk("api_keys.id", ondelete="CASCADE")
     created_at: Mapped[datetime] = ts(default=utcnow)
 
 
@@ -1435,4 +1445,260 @@ class PlatformAdmin(Base):
     name: Mapped[str] = mapped_column(Text)
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     auth_user_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+# =============================================================================
+# Fase 4 (migraciones 17–20): escala, omnicanal, calidad y API pública. docs/data-model.md §12
+# =============================================================================
+class WorkerHeartbeat(Base):
+    __tablename__ = "worker_heartbeats"
+
+    worker_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    role: Mapped[str] = mapped_column(Text)  # api | worker | all
+    hostname: Mapped[str] = mapped_column(Text)
+    version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = ts(default=utcnow)
+    last_beat_at: Mapped[datetime] = ts(default=utcnow)
+    loops: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class RealtimeSpill(Base):
+    """UNLOGGED: eventos en vivo que no caben en un NOTIFY."""
+
+    __tablename__ = "realtime_spill"
+
+    id: Mapped[int] = pk()
+    payload: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class RateLimitCounter(Base):
+    """UNLOGGED: usar public.rate_limit_hit(bucket, window_s)."""
+
+    __tablename__ = "rate_limit_counters"
+
+    bucket: Mapped[str] = mapped_column(Text, primary_key=True)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class ContactIdentity(Base):
+    __tablename__ = "contact_identities"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    contact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("contacts.id", ondelete="CASCADE"))
+    provider: Mapped[str] = mapped_column(Text)  # whatsapp_cloud | messenger | instagram | webchat
+    channel_id: Mapped[int | None] = fk("channels.id", ondelete="CASCADE")
+    external_id: Mapped[str] = mapped_column(Text)
+    username: Mapped[str | None] = mapped_column(Text, nullable=True)
+    profile: Mapped[dict] = mapped_column(JSONB, default=dict)
+    last_inbound_at: Mapped[datetime | None] = ts(nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class WebchatSession(Base):
+    __tablename__ = "webchat_sessions"
+    __table_args__ = (UniqueConstraint("channel_id", "visitor_id"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    channel_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("channels.id", ondelete="CASCADE"))
+    visitor_id: Mapped[str] = mapped_column(Text)
+    token_hash: Mapped[str] = mapped_column(Text)
+    contact_id: Mapped[int | None] = fk("contacts.id", ondelete="SET NULL")
+    conversation_id: Mapped[int | None] = fk("conversations.id", ondelete="SET NULL")
+    web_session_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    page_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ip_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    last_seen_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class QAScorecard(Base):
+    __tablename__ = "qa_scorecards"
+    __table_args__ = (UniqueConstraint("organization_id", "name"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    name: Mapped[str] = mapped_column(Text)
+    applies_to: Mapped[str] = mapped_column(Text, default="agent")  # agent | bot | any
+    criteria: Mapped[list] = mapped_column(JSONB)  # [{key, label, description, weight, critical}]
+    auto_review: Mapped[bool] = mapped_column(Boolean, default=True)
+    sample_pct: Mapped[int] = mapped_column(Integer, default=100)
+    min_messages: Mapped[int] = mapped_column(Integer, default=3)
+    group_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class ConversationReview(Base):
+    __tablename__ = "conversation_reviews"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    conversation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("conversations.id", ondelete="CASCADE"))
+    scorecard_id: Mapped[int | None] = fk("qa_scorecards.id", ondelete="SET NULL")
+    reviewer_type: Mapped[str] = mapped_column(Text)  # ai | human
+    reviewer_agent_id: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    subject_type: Mapped[str] = mapped_column(Text)  # agent | bot
+    agent_id: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    ai_agent_id: Mapped[int | None] = fk("ai_agents.id", ondelete="SET NULL")
+    status: Mapped[str] = mapped_column(Text, default="done")  # pending | done | failed | disputed
+    scores: Mapped[dict] = mapped_column(JSONB, default=dict)
+    total_score: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    critical_failed: Mapped[bool] = mapped_column(Boolean, default=False)
+    sentiment: Mapped[str | None] = mapped_column(Text, nullable=True)  # positive | neutral | negative | mixed
+    sentiment_score: Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
+    customer_effort: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_call_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dispute_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class CoachingItem(Base):
+    __tablename__ = "coaching_items"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    agent_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("agents.id", ondelete="CASCADE"))
+    review_id: Mapped[int | None] = fk("conversation_reviews.id", ondelete="SET NULL")
+    criterion_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    title: Mapped[str] = mapped_column(Text)
+    suggestion: Mapped[str] = mapped_column(Text)
+    example: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, default="open")  # open | acknowledged | done | dismissed
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    resolved_at: Mapped[datetime | None] = ts(nullable=True)
+
+
+class AgentTestSuite(Base):
+    __tablename__ = "agent_test_suites"
+    __table_args__ = (UniqueConstraint("ai_agent_id", "name"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    ai_agent_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("ai_agents.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_on_change: Mapped[bool] = mapped_column(Boolean, default=True)
+    min_pass_pct: Mapped[int] = mapped_column(Integer, default=80)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class AgentTestCase(Base):
+    __tablename__ = "agent_test_cases"
+
+    id: Mapped[int] = pk()
+    suite_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("agent_test_suites.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(Text)
+    turns: Mapped[list] = mapped_column(JSONB)  # [{role: user|assistant, text}]
+    expectations: Mapped[dict] = mapped_column(JSONB, default=dict)
+    source_conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class AgentTestRun(Base):
+    __tablename__ = "agent_test_runs"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    suite_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("agent_test_suites.id", ondelete="CASCADE"))
+    ai_agent_id: Mapped[int] = mapped_column(BigInteger)
+    config_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    trigger: Mapped[str] = mapped_column(Text, default="manual")  # manual | on_change | schedule
+    status: Mapped[str] = mapped_column(Text, default="running")  # running | passed | failed | error
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    passed: Mapped[int] = mapped_column(Integer, default=0)
+    pass_pct: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    cost_usd: Mapped[float] = mapped_column(Numeric(12, 6), default=0)
+    started_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    started_at: Mapped[datetime] = ts(default=utcnow)
+    finished_at: Mapped[datetime | None] = ts(nullable=True)
+
+
+class AgentTestResult(Base):
+    __tablename__ = "agent_test_results"
+
+    id: Mapped[int] = pk()
+    run_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("agent_test_runs.id", ondelete="CASCADE"))
+    case_id: Mapped[int | None] = fk("agent_test_cases.id", ondelete="SET NULL")
+    passed: Mapped[bool] = mapped_column(Boolean)
+    reply: Mapped[str | None] = mapped_column(Text, nullable=True)
+    checks: Mapped[list] = mapped_column(JSONB, default=list)
+    judge_score: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ai_call_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    name: Mapped[str] = mapped_column(Text)
+    prefix: Mapped[str] = mapped_column(Text, unique=True)
+    key_hash: Mapped[str] = mapped_column(Text, unique=True)
+    scopes: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    rate_limit_per_min: Mapped[int] = mapped_column(Integer, default=120)
+    last_used_at: Mapped[datetime | None] = ts(nullable=True)
+    last_used_ip: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime | None] = ts(nullable=True)
+    revoked_at: Mapped[datetime | None] = ts(nullable=True)
+    created_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class ApiRequest(Base):
+    """Particionada: PK (id, created_at)."""
+
+    __tablename__ = "api_requests"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    organization_id: Mapped[int] = mapped_column(BigInteger)
+    api_key_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    method: Mapped[str] = mapped_column(Text)
+    path: Mapped[str] = mapped_column(Text)
+    status: Mapped[int] = mapped_column(SmallInteger)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ip: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ApiIdempotency(Base):
+    __tablename__ = "api_idempotency"
+
+    organization_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_hash: Mapped[str] = mapped_column(Text)
+    status: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    agent_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("agents.id", ondelete="CASCADE"))
+    endpoint: Mapped[str] = mapped_column(Text, unique=True)
+    p256dh: Mapped[str] = mapped_column(Text)
+    auth: Mapped[str] = mapped_column(Text)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preferences: Mapped[dict] = mapped_column(JSONB, default=lambda: {"assigned": True, "message_assigned": True,
+                                                                       "call": True})
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+    last_success_at: Mapped[datetime | None] = ts(nullable=True)
     created_at: Mapped[datetime] = ts(default=utcnow)

@@ -293,7 +293,7 @@ async def run_agent(conversation_id: int) -> None:
         now_local = utcnow().astimezone(tz)
         context = (f"## Contexto\nFecha y hora actual: {WEEKDAYS[now_local.weekday()]} "
                    f"{now_local:%Y-%m-%d %H:%M} ({tz.key}).\n"
-                   f"Cliente: {conv.contact.name or 'desconocido'} (WhatsApp +{conv.contact.wa_id}).")
+                   f"Cliente: {conv.contact.name or 'desconocido'} ({_channel_label(conv)}).")
         if agent.use_customer_memory and conv.contact.memory:
             context += f"\nMemoria del cliente (lo que ya sabemos de él):\n{conv.contact.memory}"
         if conv.ad_headline:
@@ -327,6 +327,15 @@ async def run_agent(conversation_id: int) -> None:
             await handoff(session, conv, str(handoff_req["reason"]), handoff_req.get("group_id"), actor="bot")
 
 
+def _channel_label(conv: Conversation) -> str:
+    """Canal por el que escribe el cliente (el modelo adapta formato y longitud)."""
+    provider = conv.channel.provider
+    if provider == "whatsapp_cloud":
+        return f"WhatsApp +{conv.contact.wa_id}"
+    return {"messenger": "Facebook Messenger", "instagram": "Instagram Direct (respuestas cortas, máx. 1000 caracteres)",
+            "webchat": "chat del sitio web"}.get(provider, provider)
+
+
 async def _send_product(session: AsyncSession, conv: Conversation, agent: AIAgent, sku: str) -> str:
     from app import catalog
 
@@ -335,11 +344,12 @@ async def _send_product(session: AsyncSession, conv: Conversation, agent: AIAgen
     if not p:
         return "No existe un producto con ese SKU. Usa search_products."
     cfg = await get_setting(session, "catalog", conv.organization_id)
-    client = await wa_client(session, conv.channel)
+    client = await wa_client(session, conv.channel, conv)
     caption = catalog.describe(p)[:1000]
     msg = Message(direction="out", sender_type="bot", ai_agent_id=agent.id, text=caption)
     try:
-        if cfg["send_as_catalog_message"] and p.in_meta_catalog and cfg["meta_catalog_id"]:
+        if (cfg["send_as_catalog_message"] and p.in_meta_catalog and cfg["meta_catalog_id"]
+                and conv.channel.provider == "whatsapp_cloud"):
             msg.type = "product"
             msg.wa_message_id = await client.send_product(conv.contact.wa_id, cfg["meta_catalog_id"], p.sku, p.name)
         elif p.image_url:

@@ -23,6 +23,7 @@ from app.attribution import REF_WINDOW, hash_ip, new_ref_code
 from app.config import get_settings
 from app.db import get_session
 from app.models import Channel, TrackingSite, WaLink, WebEvent, WebSession, utcnow
+from app.ops.ratelimit import per_ip
 
 router = APIRouter(prefix="/t", tags=["tracking"])
 MAX_FIELD = 1000
@@ -133,7 +134,13 @@ async def tracking_script(public_key: str, session: AsyncSession = Depends(get_s
                     headers={"Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*"})
 
 
-@router.post("/collect")
+# Límites por IP (compartidos entre réplicas). Generosos: varias personas pueden salir por la misma IP (NAT).
+COLLECT_LIMIT = Depends(per_ip("t_collect", 120))
+EVENT_LIMIT = Depends(per_ip("t_event", 240))
+REDIRECT_LIMIT = Depends(per_ip("t_redirect", 60))
+
+
+@router.post("/collect", dependencies=[COLLECT_LIMIT])
 async def collect(request: Request, session: AsyncSession = Depends(get_session)):
     """Crea la sesión de la visita (o actualiza la existente) y devuelve su ref_code."""
     data = await _body(request)
@@ -170,7 +177,7 @@ async def collect(request: Request, session: AsyncSession = Depends(get_session)
     return _cors(request, JSONResponse({"ref_code": ws.ref_code}))
 
 
-@router.post("/event")
+@router.post("/event", dependencies=[EVENT_LIMIT])
 async def event(request: Request, session: AsyncSession = Depends(get_session)):
     data = await _body(request)
     site = await _site(session, str(data.get("k", "")))
@@ -189,12 +196,13 @@ async def event(request: Request, session: AsyncSession = Depends(get_session)):
     return _cors(request, JSONResponse({"ok": True}))
 
 
-@router.get("/wa/{public_key}")
+@router.get("/wa/{public_key}", dependencies=[REDIRECT_LIMIT])
 async def wa_redirect(public_key: str, r: str | None = None, session: AsyncSession = Depends(get_session)):
     """Registra el clic y redirige a WhatsApp con el código en el mensaje prellenado."""
     site = await _site(session, public_key)
     channel = await session.get(Channel, site.channel_id) if site.channel_id else (await session.scalars(
-        select(Channel).where(Channel.organization_id == site.organization_id).order_by(Channel.id).limit(1))).first()
+        select(Channel).where(Channel.organization_id == site.organization_id, Channel.provider == "whatsapp_cloud")
+        .order_by(Channel.id).limit(1))).first()
     phone = re.sub(r"\D", "", (channel.display_phone if channel else "") or "")
     text = site.wa_prefill
     if r:
@@ -220,7 +228,7 @@ def _wa_url(channel: Channel | None, text: str) -> str:
 async def link_channel(session: AsyncSession, link: WaLink) -> Channel | None:
     if link.channel_id:
         return await session.get(Channel, link.channel_id)
-    return (await session.scalars(select(Channel).where(Channel.organization_id == link.organization_id)
+    return (await session.scalars(select(Channel).where(Channel.organization_id == link.organization_id, Channel.provider == "whatsapp_cloud")
                                   .order_by(Channel.id).limit(1))).first()
 
 
@@ -229,7 +237,7 @@ def direct_url(channel: Channel | None, link: WaLink) -> str:
     return _wa_url(channel, link.trigger_text)
 
 
-@router.get("/l/{slug}")
+@router.get("/l/{slug}", dependencies=[REDIRECT_LIMIT])
 async def link_redirect(slug: str, request: Request, r: str | None = None, session: AsyncSession = Depends(get_session)):
     """Enlace corto de un mensaje disparador: registra la visita y el clic y abre WhatsApp."""
     link = await session.scalar(select(WaLink).where(WaLink.slug == slug.lower()))

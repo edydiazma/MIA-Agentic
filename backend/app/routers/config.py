@@ -204,10 +204,15 @@ async def delete_resource(rid: int, agent: Agent = Depends(require_admin), sessi
 
 # --- Plataforma: números de WhatsApp --------------------------------------------
 def _ch(c: Channel) -> dict:
+    whatsapp = c.provider == "whatsapp_cloud"
     return {
-        "id": c.id, "name": c.name, "phone_number_id": c.phone_number_id, "display_phone": c.display_phone,
-        "waba_id": c.waba_id, "bot_id": c.default_ai_agent_id, "has_own_token": bool(c.access_token_secret_id),
-        "token_configured": bool(c.access_token_secret_id or env.wa_access_token),
+        "id": c.id, "name": c.name, "provider": c.provider, "phone_number_id": c.phone_number_id,
+        "display_phone": c.display_phone, "waba_id": c.waba_id, "bot_id": c.default_ai_agent_id,
+        "has_own_token": bool(c.access_token_secret_id),
+        "token_configured": bool(c.access_token_secret_id or (whatsapp and env.wa_access_token)
+                                 or c.provider == "webchat"),
+        "external_id": c.external_id, "page_id": c.page_id, "status": c.status, "last_error": c.last_error,
+        "settings": c.settings or {},
     }
 
 
@@ -258,6 +263,8 @@ async def update_channel(cid: int, body: ChannelIn, agent: Agent = Depends(requi
     c = await session.get(Channel, cid)
     if not c or c.organization_id != agent.organization_id:
         raise HTTPException(404, "Canal no encontrado")
+    if c.provider != "whatsapp_cloud":
+        raise HTTPException(409, "Este canal no es de WhatsApp: edítalo en /api/channels/{id}/omnichannel")
     c.name, c.display_phone = body.name, body.display_phone
     if body.waba_id is not None:
         c.waba_id = body.waba_id or None

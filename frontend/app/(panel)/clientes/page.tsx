@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { STAGE_LABEL, contactLabel, fmtDate, qs, type Contact, type Stage } from "@/lib/api";
+import { STAGE_LABEL, contactLabel, fmtDate, qs, type Contact, type Stage, phoneLabel } from "@/lib/api";
 import { Badge, Card, Empty, ErrorBox, Loading, PageHeader, useApi } from "@/components/ui";
 import ContactDetail from "@/components/clients/ContactDetail";
 import { ImportModal, NewContactModal } from "@/components/clients/ContactModals";
@@ -97,7 +97,7 @@ export default function ClientesPage() {
                       <span className="strong">{contactLabel(c)}</span>{" "}
                       {c.marketing_opt_out && <Badge tone="warn">Opt-out</Badge>}
                     </td>
-                    <td className="nowrap">+{c.wa_id}</td>
+                    <td className="nowrap">{phoneLabel(c.wa_id)}</td>
                     <td>{c.email ?? "—"}</td>
                     <td>
                       <Badge tone={STAGE_TONE[c.stage]}>{STAGE_LABEL[c.stage]}</Badge>

@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import {
+  CHANNEL_ICONS,
+  CHANNEL_LABELS,
   STAGE_LABEL,
   api,
   fmtDateTime,
@@ -10,6 +12,7 @@ import {
   send,
   type Appointment,
   type Contact,
+  type ContactIdentity,
   type Conversation,
   type FollowUp,
   type Stage,
@@ -19,6 +22,7 @@ import CustomFieldsEditor from "@/components/fields/CustomFieldsEditor";
 import FieldHistory from "@/components/fields/FieldHistory";
 import AIAnalysis from "./AIAnalysis";
 import DealsSection from "@/components/crm/DealsSection";
+import ConversationQuality from "@/components/quality/ConversationQuality";
 import ConversationOrigin from "@/components/attribution/ConversationOrigin";
 
 function in60Days() {
@@ -128,10 +132,15 @@ export default function ContactPanel({
       <div>
         <h3>Cliente</h3>
         <div className="inline" style={{ marginBottom: 8 }}>
-          <span className="muted small">+{contact.wa_id}</span>
+          {contact.avatar_url && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={contact.avatar_url} alt="" width={28} height={28} style={{ borderRadius: "50%" }} />
+          )}
+          {contact.wa_id && <span className="muted small">+{contact.wa_id}</span>}
           {contact.marketing_opt_out && <Badge tone="warn">Sin marketing</Badge>}
           {contact.blocked && <Badge tone="bad">Bloqueado</Badge>}
         </div>
+        <Identities contactId={contact.id} />
         <div className="stack" style={{ gap: 8 }}>
           <input placeholder="Nombre" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           <input placeholder="Email" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
@@ -181,6 +190,7 @@ export default function ContactPanel({
       <ConversationOrigin key={conversation.id} conversationId={conversation.id} adHeadline={conversation.ad_headline} />
 
       <DealsSection key={contact.id} contact={contact} conversationId={conversation.id} />
+      <ConversationQuality conversationId={conversation.id} closed={conversation.status === "closed"} />
 
       <div>
         <h3>Seguimientos</h3>
@@ -230,5 +240,23 @@ export default function ContactPanel({
       </div>
       <ErrorBox error={error} />
     </aside>
+  );
+}
+
+/** Identidades del contacto en cada canal (número, @usuario de Instagram, Messenger, visitante web). */
+function Identities({ contactId }: { contactId: number }) {
+  const ids = useApi<ContactIdentity[]>(`/api/contacts/${contactId}/identities`);
+  const rows = (ids.data ?? []).filter((i) => i.provider !== "whatsapp_cloud");
+  if (!rows.length) return null;
+  return (
+    <ul className="small" style={{ listStyle: "none", padding: 0, margin: "0 0 8px" }}>
+      {rows.map((i) => (
+        <li key={i.id} title={i.external_id}>
+          {CHANNEL_ICONS[i.provider]} {CHANNEL_LABELS[i.provider]}
+          {i.username ? ` · @${i.username}` : i.provider === "webchat" ? " · visitante web" : ""}
+          {i.channel_name && <span className="muted"> ({i.channel_name})</span>}
+        </li>
+      ))}
+    </ul>
   );
 }

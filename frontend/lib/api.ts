@@ -15,7 +15,9 @@ export type Group = { id: number; name: string; description: string | null };
 export type Stage = "lead" | "prospect" | "client" | "lost";
 export type Contact = {
   id: number;
-  wa_id: string;
+  /** null: contacto sin WhatsApp (Instagram, Messenger, chat web). */
+  wa_id: string | null;
+  avatar_url?: string | null;
   name: string | null;
   email: string | null;
   notes: string | null;
@@ -28,11 +30,39 @@ export type Contact = {
   marketing_opt_out: boolean;
   created_at: string | null;
 };
+export type ChannelProvider = "whatsapp_cloud" | "messenger" | "instagram" | "webchat";
+export const CHANNEL_LABELS: Record<ChannelProvider, string> = {
+  whatsapp_cloud: "WhatsApp",
+  messenger: "Messenger",
+  instagram: "Instagram",
+  webchat: "Chat web",
+};
+export const CHANNEL_ICONS: Record<ChannelProvider, string> = {
+  whatsapp_cloud: "🟢",
+  messenger: "💬",
+  instagram: "📸",
+  webchat: "🌐",
+};
+export type ContactIdentity = {
+  id: number;
+  provider: ChannelProvider;
+  channel_id: number | null;
+  channel_name: string | null;
+  external_id: string;
+  username: string | null;
+  last_inbound_at: string | null;
+  created_at: string;
+};
 export type Conversation = {
   id: number;
   status: "bot" | "human" | "closed";
   contact: Contact;
   channel_id: number;
+  channel_provider: ChannelProvider;
+  channel_name: string | null;
+  channel_label: string | null;
+  /** Se puede escribir libremente (WhatsApp 24 h; Messenger/Instagram 7 días para asesores; chat web siempre). */
+  window_open: boolean;
   assigned_agent: Agent | null;
   group: Group | null;
   handoff_reason: string | null;
@@ -253,12 +283,18 @@ export type Resource = { id: number; name: string; mime: string; size: number; c
 export type Channel = {
   id: number;
   name: string;
-  phone_number_id: string;
+  provider?: ChannelProvider;
+  phone_number_id: string | null;
   display_phone: string | null;
   waba_id?: string | null;
   bot_id: number | null; // agente de IA por defecto del número (default_ai_agent_id)
   has_own_token: boolean;
   token_configured: boolean;
+  external_id?: string | null;
+  page_id?: string | null;
+  status?: "active" | "disconnected" | "error";
+  last_error?: string | null;
+  settings?: Record<string, unknown>;
 };
 export type Alert = {
   id: number;
@@ -396,7 +432,10 @@ export function timeAgo(iso: string | null | undefined): string {
   return `hace ${Math.floor(s / 86400)} días`;
 }
 
-export const contactLabel = (c: { name: string | null; wa_id: string }) => c.name || `+${c.wa_id}`;
+/** Teléfono para mostrar; los contactos de Instagram/Messenger/chat web no tienen. */
+export const phoneLabel = (waId: string | null | undefined) => (waId ? `+${waId}` : "Sin WhatsApp");
+export const contactLabel = (c: { name: string | null; wa_id: string | null }) =>
+  c.name || (c.wa_id ? `+${c.wa_id}` : "Sin nombre");
 
 export const STAGE_LABEL: Record<Stage, string> = {
   lead: "Lead",

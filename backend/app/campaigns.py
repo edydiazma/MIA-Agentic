@@ -19,9 +19,13 @@ async def send_template_message(session, conv, tpl: dict, values: list[str], sen
                                 agent_id: int | None = None, campaign_id: int | None = None) -> Message:
     """Envía una plantilla a la conversación y la registra en el historial."""
     components, rendered = templates.build(tpl, values)
+    if conv.channel.provider != "whatsapp_cloud":
+        raise ValueError("Las plantillas son solo de WhatsApp")
     msg = Message(direction="out", sender_type=sender_type, sender_agent_id=agent_id, type="template",
                   text=rendered, template_name=tpl["name"], campaign_id=campaign_id)
     try:
+        if not conv.contact.wa_id:
+            raise ValueError("El contacto no tiene número de WhatsApp")
         msg.wa_message_id = await (await wa_client(session, conv.channel)).send_template(
             conv.contact.wa_id, tpl["name"], tpl["language"], components)
         msg.status = "sent"
@@ -38,9 +42,9 @@ async def run_campaign(campaign_id: int) -> None:
         campaign.status, campaign.started_at = "running", utcnow()
         await session.commit()
 
-        error = None
+        error = None if channel.provider == "whatsapp_cloud" else "Las campañas de plantillas son solo de WhatsApp"
         try:
-            catalog = await templates.list_templates(session, channel)
+            catalog = [] if error else await templates.list_templates(session, channel)
         except Exception as e:
             catalog, error = [], str(e)
         tpl = next((t for t in catalog if t["name"] == campaign.template_name
@@ -63,6 +67,8 @@ async def run_campaign(campaign_id: int) -> None:
             contact = r.contact
             if contact.blocked:
                 r.status, r.error = "skipped", "Contacto bloqueado"
+            elif not contact.wa_id:
+                r.status, r.error = "skipped", "El contacto no tiene número de WhatsApp"
             elif tpl["category"] == "MARKETING" and contact.marketing_opt_out:
                 r.status, r.error = "skipped", "El contacto no acepta marketing (opt-out)"
             else:

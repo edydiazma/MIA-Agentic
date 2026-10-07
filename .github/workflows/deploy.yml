@@ -1,0 +1,80 @@
+# Despliegue a la EC2: manual (Actions → Deploy → Run workflow) o al publicar un tag v*.
+# Requiere que CI haya pasado para ese commit. Las migraciones NO se aplican aquí (npx supabase db push antes).
+#
+# Secretos del repositorio (Settings → Secrets and variables → Actions):
+#   EC2_HOST          IP elástica o DNS de la instancia
+#   EC2_USER          usuario SSH (ubuntu)
+#   EC2_SSH_KEY       llave privada SSH (formato OpenSSH) con acceso a la instancia
+#   EC2_KNOWN_HOSTS   salida de `ssh-keyscan -t ed25519 <host>` (evita aceptar llaves desconocidas)
+#   APP_DOMAIN        dominio público (panel.tuempresa.com) para verificar /health/ready
+# Variable opcional: EC2_APP_DIR (por defecto ~/wa-agent-platform)
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Rama, tag o commit a desplegar
+        required: true
+        default: main
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - name: Verificar que CI pasó para este commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ inputs.ref || github.ref_name }}
+        run: |
+          sha=$(gh api "repos/${{ github.repository }}/commits/$REF" --jq .sha)
+          state=$(gh api "repos/${{ github.repository }}/commits/$sha/check-runs" \
+            --jq '[.check_runs[] | select(.name == "backend" or .name == "frontend") | .conclusion] | if length < 2 then "missing" elif all(. == "success") then "success" else "failure" end')
+          echo "CI de $sha: $state"
+          test "$state" = "success"
+          echo "SHA=$sha" >> "$GITHUB_ENV"
+
+      - name: Configurar SSH
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 644 ~/.ssh/known_hosts
+
+      - name: Desplegar (actualización escalonada)
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+          APP_DIR: ${{ vars.EC2_APP_DIR || '~/wa-agent-platform' }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes "$USER@$HOST" \
+            "set -euo pipefail; cd $APP_DIR && git fetch --tags --force origin && git checkout --detach $SHA && \
+             APP_VERSION=$SHA SKIP_PULL=1 ./deploy/update.sh"
+
+      - name: Verificar /health/ready
+        env:
+          DOMAIN: ${{ secrets.APP_DOMAIN }}
+        run: |
+          for i in $(seq 1 20); do
+            if curl -fsS "https://$DOMAIN/health/ready" -o /tmp/ready.json; then
+              python3 -c "import json; d=json.load(open('/tmp/ready.json')); print('listo:', d['role'], d['checks'])"
+              exit 0
+            fi
+            sleep 6
+          done
+          echo "El backend no quedó listo" >&2
+          exit 1
+
+      - name: Limpiar llave
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

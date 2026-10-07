@@ -220,7 +220,7 @@ class Runner:
     async def _client(self):
         from app.service import wa_client
 
-        return await wa_client(self.session, self.conv.channel)
+        return await wa_client(self.session, self.conv.channel, self.conv)
 
     async def _record(self, msg: Message) -> None:
         from app.service import record_message
@@ -356,6 +356,8 @@ class Runner:
             if dry:
                 self.sim.messages.append({"text": f"[plantilla {name}] {', '.join(values)}"})
                 return None, {"template": name}
+            if self.conv.channel.provider != "whatsapp_cloud":
+                raise FlowError("Las plantillas solo funcionan en WhatsApp")
             from app import templates
             from app.campaigns import send_template_message
 

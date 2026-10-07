@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { contactLabel, fmtDateTime, qs, type Conversation } from "@/lib/api";
+import { contactLabel, fmtDateTime, qs, type Conversation, phoneLabel } from "@/lib/api";
 import { Card, Empty, ErrorBox, Loading, PageHeader, useApi } from "@/components/ui";
 
 export default function HistorialPage() {
@@ -43,7 +43,7 @@ export default function HistorialPage() {
                   <tr key={c.id}>
                     <td>
                       <div className="strong">{contactLabel(c.contact)}</div>
-                      <div className="small muted">+{c.contact.wa_id}</div>
+                      <div className="small muted">{phoneLabel(c.contact.wa_id)}</div>
                     </td>
                     <td>{c.typification ?? <span className="muted">—</span>}</td>
                     <td>{c.assigned_agent?.name ?? <span className="muted">Bot</span>}</td>

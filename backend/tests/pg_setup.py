@@ -46,6 +46,9 @@ def ensure_test_database() -> str:
     for f in sorted((SUPABASE / "migrations").glob("*.sql")):
         _psql_file(f)
     _psql_file(SUPABASE / "seed.sql")
+    # Varias pruebas crean empresas con ids fijos (8, 9, 9101…): los ids automáticos arrancan lejos de ellos
+    _run(str(PGB / "psql"), *base, "-d", DB, "-qc",
+         "select setval(pg_get_serial_sequence('public.organizations', 'id'), 100000)")
     return f"postgresql+asyncpg://postgres@localhost:{PORT}/{DB}"
 
 

@@ -1,0 +1,23 @@
+{
+  "name": "WA Agent · Bandeja de asesores",
+  "short_name": "WA Agent",
+  "description": "Conversaciones de WhatsApp, Instagram y Messenger con IA y asesores",
+  "id": "/conversaciones",
+  "start_url": "/conversaciones",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "lang": "es",
+  "background_color": "#ffffff",
+  "theme_color": "#128c7e",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "Conversaciones", "url": "/conversaciones", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Tablero", "url": "/tablero", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

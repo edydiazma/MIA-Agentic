@@ -5,6 +5,7 @@ import { API_URL, api, send, type Bot, type Channel, type Template } from "@/lib
 import { Badge, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, useAction, useApi } from "@/components/ui";
 import { AdminNotice, ConfigTabs, copy, useIsAdmin } from "@/components/config/common";
 import { EmbeddedSignupButton } from "@/components/saas/EmbeddedSignupButton";
+import OmnichannelCard from "@/components/channels/OmnichannelCard";
 
 type ChannelsResp = { channels: Channel[]; waba_id: string | null; webhook_path: string; app_secret_configured: boolean };
 type Draft = { id?: number; name: string; phone_number_id: string; display_phone: string; access_token: string; bot_id: number | null };
@@ -20,7 +21,13 @@ function Check({ ok, children }: { ok: boolean; children: React.ReactNode }) {
 
 export default function PlataformaPage() {
   const isAdmin = useIsAdmin();
-  const { data, error, loading, reload } = useApi<ChannelsResp>("/api/channels");
+  const resp = useApi<ChannelsResp>("/api/channels");
+  const { error, loading, reload } = resp;
+  // Esta tarjeta es de WhatsApp; Messenger, Instagram y chat web están en OmnichannelCard
+  const data = resp.data && {
+    ...resp.data,
+    channels: resp.data.channels.filter((c) => !c.provider || c.provider === "whatsapp_cloud"),
+  };
   const bots = useApi<Bot[]>("/api/bots").data ?? [];
   const [draft, setDraft] = useState<Draft | null>(null);
   const [run, busy, actionError, setActionError] = useAction();
@@ -103,7 +110,7 @@ export default function PlataformaPage() {
                           onClick={() => {
                             setActionError(null);
                             setDraft({
-                              id: c.id, name: c.name, phone_number_id: c.phone_number_id,
+                              id: c.id, name: c.name, phone_number_id: c.phone_number_id ?? "",
                               display_phone: c.display_phone ?? "", access_token: "", bot_id: c.bot_id,
                             });
                           }}
@@ -119,6 +126,14 @@ export default function PlataformaPage() {
           </div>
         )}
       </Card>
+
+      <OmnichannelCard
+        channels={(resp.data?.channels ?? []).filter((c) => c.provider && c.provider !== "whatsapp_cloud")}
+        bots={bots}
+        isAdmin={isAdmin}
+        webhookUrl={webhookUrl}
+        onChange={reload}
+      />
 
       <Card title="Conexión con Meta">
         <ul className="stack small" style={{ listStyle: "none", padding: 0, margin: 0, gap: 8 }}>

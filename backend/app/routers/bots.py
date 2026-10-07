@@ -88,6 +88,7 @@ async def apply_bot_update(session: AsyncSession, bot: AIAgent, changes: dict, a
     await add_revision(session, bot.organization_id, "ai_agent", bot.id, bot_document(out), source, agent_id,
                        ai_prompt=ai_prompt)
     await session.commit()
+    __import__("app.quality.hooks", fromlist=["x"]).on_agent_changed(bot.organization_id, bot.id)  # pruebas QA
     return out
 
 

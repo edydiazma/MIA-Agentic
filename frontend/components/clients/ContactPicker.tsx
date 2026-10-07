@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, contactLabel, qs, type Contact } from "@/lib/api";
+import { api, contactLabel, qs, type Contact, phoneLabel } from "@/lib/api";
 
 /** Buscador de clientes por nombre, teléfono o email. */
 export default function ContactPicker({
@@ -31,7 +31,7 @@ export default function ContactPicker({
     return (
       <div className="inline">
         <strong>{contactLabel(value)}</strong>
-        <span className="muted">+{value.wa_id}</span>
+        <span className="muted">{phoneLabel(value.wa_id)}</span>
         <button type="button" className="link" onClick={() => onChange(null)}>
           Cambiar
         </button>
@@ -48,7 +48,7 @@ export default function ContactPicker({
               {results.map((c) => (
                 <tr key={c.id} className="clickable" onClick={() => onChange(c)}>
                   <td>{contactLabel(c)}</td>
-                  <td className="muted">+{c.wa_id}</td>
+                  <td className="muted">{phoneLabel(c.wa_id)}</td>
                 </tr>
               ))}
             </tbody>

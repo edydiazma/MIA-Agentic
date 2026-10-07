@@ -102,6 +102,7 @@ async def create_org(session: AsyncSession, name: str, country: str | None, plan
     for pos, (tname, success) in enumerate(DEFAULT_TYPIFICATIONS, start=1):
         session.add(Typification(organization_id=org.id, name=tname, is_success=success, position=pos))
     await session.flush()
+    await __import__("app.quality.defaults", fromlist=["x"]).ensure_defaults(session, org.id)  # rúbricas QA
     return org
 
 

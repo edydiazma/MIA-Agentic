@@ -32,6 +32,7 @@ export const NAV: NavEntry[] = [
           { label: "Mejor vendedor", href: "/automatizaciones/mejor-vendedor" },
           { label: "Catálogo de productos", href: "/automatizaciones/catalogo" },
           { label: "Historial JSON", href: "/automatizaciones/revisiones" },
+          { label: "Pruebas de agentes", href: "/automatizaciones/cortex/pruebas" },
         ],
       },
       {
@@ -46,6 +47,7 @@ export const NAV: NavEntry[] = [
         items: [
           { label: "Tareas automatizadas", href: "/automatizaciones/tareas" },
           { label: "Webhooks", href: "/automatizaciones/webhooks" },
+          { label: "Calidad (QA)", href: "/automatizaciones/calidad" },
         ],
       },
     ],
@@ -62,6 +64,8 @@ export const NAV: NavEntry[] = [
           { label: "Etapas de contactos", href: "/reportes/etapas" },
           { label: "IA y Cortex", href: "/reportes/ia" },
           { label: "Análisis de flujos", href: "/reportes/flujos" },
+          { label: "Canales", href: "/reportes/canales" },
+          { label: "Calidad y coaching", href: "/reportes/calidad" },
           { label: "Llamadas", href: "/reportes/llamadas" },
         ],
       },
@@ -102,6 +106,19 @@ export const NAV: NavEntry[] = [
   },
   { label: "Seguimiento", icon: "📌", href: "/seguimiento" },
   {
+    label: "Mi espacio",
+    icon: "🎯",
+    groups: [
+      {
+        label: "",
+        items: [
+          { label: "Mi coaching", href: "/coaching" },
+          { label: "Notificaciones", href: "/configuraciones/notificaciones" },
+        ],
+      },
+    ],
+  },
+  {
     label: "Configuraciones",
     icon: "🛠️",
     adminOnly: true,
@@ -124,6 +141,7 @@ export const NAV: NavEntry[] = [
           { label: "Atribución web", href: "/configuraciones/atribucion" },
           { label: "Mensajes disparadores", href: "/configuraciones/mensajes-disparadores" },
           { label: "Conversiones", href: "/configuraciones/conversiones" },
+          { label: "API y conectores", href: "/configuraciones/api" },
           { label: "Plan y facturación", href: "/configuraciones/plan" },
         ],
       },

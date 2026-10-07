@@ -1,5 +1,7 @@
-"""Procesa los webhooks de WhatsApp: mensajes, estados (con facturación), opt-outs de marketing y
-alertas de plantillas, calidad del número y cuenta. El payload crudo queda en inbound_events."""
+"""Procesa los webhooks de Meta: WhatsApp (mensajes, estados con facturación, opt-outs de marketing y alertas
+de plantillas, calidad del número y cuenta), Messenger (object "page") e Instagram (object "instagram").
+El payload crudo queda en inbound_events. Todos los canales comparten el mismo flujo después de guardar el
+mensaje (after_inbound): atribución → flujos → automatizaciones → clasificación → IA."""
 
 import logging
 
@@ -10,11 +12,12 @@ from app.agent import schedule_reply
 from app.ai.transcribe import transcribe
 from app.automations import on_inbound
 from app.db import SessionLocal, set_actor
-from app.models import CampaignRecipient, Channel, Contact, Message, MessageWaId, utcnow
+from app.models import CampaignRecipient, Channel, Contact, ContactIdentity, Conversation, Message, MessageWaId, utcnow
 from app.realtime import hub
 from app.service import (
     create_alert,
     get_or_create_contact,
+    get_or_create_contact_by_identity,
     get_or_create_conversation,
     message_out,
     record_message,
@@ -65,6 +68,9 @@ class WebhookProcessingError(Exception):
 async def process_webhook(payload: dict) -> None:
     """Procesa cada cambio por separado (uno que falle no bloquea a los demás).
     El payload crudo lo guarda el router en inbound_events antes de llamar aquí."""
+    if payload.get("object") in ("page", "instagram"):
+        await process_meta_messaging(payload)
+        return
     errors = []
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
@@ -244,18 +250,7 @@ async def _handle_message(phone_number_id: str, m: dict, profile_name: str | Non
                 msg.error = f"No se pudo descargar el archivo: {e}"[:2000]
 
         await record_message(session, conv, msg)
-        from app.attribution import on_inbound as attribute  # Click to WA, ref web, mensaje disparador
-
-        link = await attribute(session, conv, msg, m)
-        from app.flows.engine import handle_inbound as flows_inbound
-
-        # Orden: flujos (espera de respuesta, flujo del mensaje disparador, palabras clave) → automatizaciones → IA
-        handled = await flows_inbound(session, conv, msg, link) or await on_inbound(session, conv, msg, is_new)
-        from app.classifier import maybe_periodic  # import diferido: classifier depende de service
-
-        await maybe_periodic(session, conv)
-        await session.refresh(conv)
-        status, conv_id = conv.status, conv.id
+        status, conv_id, handled = await after_inbound(session, conv, msg, m, is_new)
 
     try:
         await client.mark_read(m["id"])
@@ -264,3 +259,173 @@ async def _handle_message(phone_number_id: str, m: dict, profile_name: str | Non
 
     if status == "bot" and not handled:
         schedule_reply(conv_id)
+
+
+async def after_inbound(session, conv: Conversation, msg: Message, raw: dict, is_new: bool,
+                        provider: str = "whatsapp_cloud") -> tuple[str, int, bool]:
+    """Mismo flujo para todos los canales una vez guardado el mensaje del cliente.
+    Devuelve (estado, id de la conversación, si un flujo o automatización ya respondió)."""
+    from app.attribution import on_inbound as attribute  # anuncio, ref web, mensaje disparador
+    from app.classifier import maybe_periodic  # import diferido: classifier depende de service
+    from app.flows.engine import handle_inbound as flows_inbound
+
+    link = await attribute(session, conv, msg, raw, provider)
+    # Orden: flujos (espera de respuesta, flujo del mensaje disparador, palabras clave) → automatizaciones → IA
+    handled = await flows_inbound(session, conv, msg, link) or await on_inbound(session, conv, msg, is_new)
+    await maybe_periodic(session, conv)
+    await session.refresh(conv)
+    return conv.status, conv.id, bool(handled)
+
+
+# --- Messenger e Instagram --------------------------------------------------------
+META_ATTACHMENT_TYPES = {"image": "image", "video": "video", "audio": "audio", "file": "document"}
+
+
+async def process_meta_messaging(payload: dict) -> None:
+    provider = "messenger" if payload.get("object") == "page" else "instagram"
+    errors = []
+    for entry in payload.get("entry", []):
+        for ev in entry.get("messaging", []) or []:
+            try:
+                await _handle_meta_event(provider, str(entry.get("id")), ev)
+            except Exception as e:
+                log.exception("Error procesando un evento de %s", provider)
+                errors.append(f"{provider}: {type(e).__name__}: {e}")
+    if errors:
+        raise WebhookProcessingError("; ".join(errors)[:2000])
+
+
+def _meta_referral(ev: dict) -> dict | None:
+    """Referral de anuncio (Click to Messenger / Instagram Direct) en el evento, el mensaje o el postback."""
+    ref = ev.get("referral") or (ev.get("message") or {}).get("referral") or (ev.get("postback") or {}).get("referral")
+    return ref if isinstance(ref, dict) else None
+
+
+async def _handle_meta_event(provider: str, entry_id: str, ev: dict) -> None:
+    from app.channels.meta import MetaClient, channel_for_entry
+
+    message = ev.get("message") or {}
+    if message.get("is_echo") or ev.get("reaction") or message.get("is_deleted"):
+        return  # eco de lo que envió la página, reacciones y borrados: no son mensajes del cliente
+    sender = str((ev.get("sender") or {}).get("id") or "")
+    async with SessionLocal() as session:
+        channel = await channel_for_entry(session, provider, entry_id)
+        if not channel:
+            log.warning("Evento de %s para una cuenta no registrada (%s): se ignora", provider, entry_id)
+            return
+        if "delivery" in ev or "read" in ev:
+            await _meta_status(session, channel, sender, ev)
+            return
+        if not sender or sender == entry_id or not (message or ev.get("postback") or ev.get("referral")):
+            return
+        referral = _meta_referral(ev)
+        if not message and not ev.get("postback"):
+            # Solo referral (el cliente abrió el chat desde un anuncio o enlace m.me): se guarda para su primer mensaje
+            contact, ident, _new = await get_or_create_contact_by_identity(session, channel, sender)
+            ident.profile = {**(ident.profile or {}), "pending_referral": referral}
+            await session.commit()
+            return
+        mid = message.get("mid") or (ev.get("postback") or {}).get("mid") or f"{provider}.{sender}.{ev.get('timestamp')}"
+        if await session.get(MessageWaId, mid):
+            return  # Meta reintenta webhooks
+        org = channel.organization_id
+        await set_actor(session, "contact")
+        client = MetaClient(channel, await _page_token(session, channel), sender)
+        contact, ident, is_new = await get_or_create_contact_by_identity(session, channel, sender)
+        if is_new:
+            prof = await client.user_profile(sender)
+            if prof:
+                contact.name = contact.name or prof.get("name") or (f"@{prof['username']}" if prof.get("username") else None)
+                contact.avatar_url = prof.get("profile_pic")
+                ident.username, ident.profile = prof.get("username"), {k: v for k, v in prof.items() if k != "id"}
+        if contact.blocked:
+            await session.commit()
+            return
+        if not referral and (ident.profile or {}).get("pending_referral"):
+            referral = ident.profile["pending_referral"]
+            ident.profile = {k: v for k, v in ident.profile.items() if k != "pending_referral"}
+        now = utcnow()
+        ident.last_inbound_at = now
+        contact.last_seen_at = now
+        conv = await get_or_create_conversation(session, channel, contact)
+        ad_id = (referral or {}).get("ad_id")
+        if ad_id:
+            ctx = (referral or {}).get("ads_context_data") or {}
+            conv.ad_source_type, conv.ad_source_id = "ad", str(ad_id)
+            conv.ad_headline = (ctx.get("ad_title") or "")[:500] or None
+            conv.ad_source_url = ctx.get("photo_url") or ctx.get("video_url")
+
+        text = message.get("text") or (ev.get("postback") or {}).get("title")
+        attachments = message.get("attachments") or []
+        att = attachments[0] if attachments else None
+        mtype = "text"
+        if att:
+            mtype = META_ATTACHMENT_TYPES.get(att.get("type"), "unsupported")
+            if att.get("type") == "story_mention":
+                text = text or "[Te mencionó en una historia]"
+            elif mtype == "unsupported":
+                text = text or f"[{att.get('type')}]"
+        msg = Message(direction="in", sender_type="contact", type=mtype if text or att else "unsupported", text=text,
+                      wa_message_id=mid, status="received",
+                      metadata_={"quick_reply": (message.get("quick_reply") or {}).get("payload")} if message.get(
+                          "quick_reply") else None)
+        url = ((att or {}).get("payload") or {}).get("url")
+        if att and mtype != "unsupported" and url:
+            try:
+                data, mime = await client.download_media(url)
+                mime = mime.split(";")[0]
+                msg.media_path = await storage.upload(
+                    storage.new_path(storage.MEDIA_BUCKET, org, f"conv/{conv.id}", mime), data, mime)
+                msg.media_mime, msg.media_size = mime, len(data)
+                if mtype == "audio":
+                    msg.transcript = await transcribe(data, mime)
+            except Exception as e:
+                log.exception("No se pudo descargar el adjunto de %s", provider)
+                msg.error = f"No se pudo descargar el archivo: {e}"[:2000]
+        await record_message(session, conv, msg)
+        raw = {"referral": {"source_type": "ad", "source_id": str(ad_id),
+                            "source_url": conv.ad_source_url}} if ad_id else {}
+        status, conv_id, handled = await after_inbound(session, conv, msg, raw, is_new, provider)
+        client.last_inbound_at = now
+    await client.mark_read()
+    if status == "bot" and not handled:
+        schedule_reply(conv_id)
+
+
+async def _page_token(session, channel: Channel) -> str | None:
+    from app.secrets_vault import get_secret
+
+    return await get_secret(session, channel.access_token_secret_id)
+
+
+async def _meta_status(session, channel: Channel, sender: str, ev: dict) -> None:
+    """Entregado (por mid) y leído (marca de agua): actualiza los mensajes salientes de esa conversación."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import update
+
+    ident = await session.scalar(select(ContactIdentity).where(
+        ContactIdentity.channel_id == channel.id, ContactIdentity.external_id == sender))
+    if not ident:
+        return
+    conv_ids = list((await session.scalars(select(Conversation.id).where(
+        Conversation.channel_id == channel.id, Conversation.contact_id == ident.contact_id))).all())
+    if not conv_ids:
+        return
+    if "delivery" in ev:
+        mids = (ev["delivery"] or {}).get("mids") or []
+        if mids:
+            await session.execute(update(Message).where(
+                Message.conversation_id.in_(conv_ids), Message.wa_message_id.in_(mids),
+                Message.status.in_(("pending", "sent"))).values(status="delivered"))
+        watermark = (ev["delivery"] or {}).get("watermark")
+        new_status, statuses = "delivered", ("pending", "sent")
+    else:
+        watermark = (ev["read"] or {}).get("watermark")
+        new_status, statuses = "read", ("pending", "sent", "delivered")
+    if watermark:
+        until = datetime.fromtimestamp(int(watermark) / 1000, tz=UTC)
+        await session.execute(update(Message).where(
+            Message.conversation_id.in_(conv_ids), Message.direction == "out", Message.created_at <= until,
+            Message.status.in_(statuses)).values(status=new_status))
+    await session.commit()

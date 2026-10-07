@@ -50,7 +50,7 @@ class CampaignOut(BaseModel):
 
 
 async def channel_for(session: AsyncSession, org: int, channel_id: int | None = None) -> Channel:
-    stmt = select(Channel).where(Channel.organization_id == org)
+    stmt = select(Channel).where(Channel.organization_id == org, Channel.provider == "whatsapp_cloud")  # plantillas: solo WhatsApp
     stmt = stmt.where(Channel.id == channel_id) if channel_id else stmt.order_by(Channel.id).limit(1)
     ch = (await session.scalars(stmt)).first()
     if not ch:

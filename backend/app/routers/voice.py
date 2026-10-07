@@ -124,8 +124,8 @@ async def delete_agent(va_id: int, agent: Agent = Depends(require_admin), sessio
 
 @router.get("/channels")
 async def list_channels(agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
-    rows = (await session.scalars(select(Channel).where(Channel.organization_id == agent.organization_id)
-                                  .order_by(Channel.id))).unique().all()
+    rows = (await session.scalars(select(Channel).where(Channel.organization_id == agent.organization_id,
+                                                        Channel.provider == "whatsapp_cloud").order_by(Channel.id))).unique().all()
     return [_channel_out(c) for c in rows]
 
 

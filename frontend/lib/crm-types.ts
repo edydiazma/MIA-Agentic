@@ -8,7 +8,7 @@ export type PipelinesConfig = { pipelines: Record<string, Pipeline>; currency: s
 export type Deal = {
   id: number;
   name: string;
-  contact: { id: number; name: string | null; wa_id: string };
+  contact: { id: number; name: string | null; wa_id: string | null };
   conversation_id: number | null;
   owner: { id: number; name: string } | null;
   amount: number | null;

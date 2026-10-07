@@ -1,0 +1,64 @@
+# Pruebas en cada push y pull request.
+# Backend: Postgres 17 local (el arnés de pruebas crea la base desde supabase/migrations + stubs de Supabase,
+# igual que en una máquina de desarrollo), pytest y ruff. Frontend: tipos y build de producción.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      PGB: /usr/lib/postgresql/17/bin
+      REALTIME_MODE: pg
+    steps:
+      - uses: actions/checkout@v4
+      - name: Postgres 17 (binarios; el arnés levanta su propio clúster en el puerto 55433)
+        working-directory: .
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -yq postgresql-17 postgresql-contrib-17 || sudo apt-get install -yq postgresql-17
+          sudo systemctl stop postgresql || true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Lint
+        run: ruff check app tests --select F,E9,B --ignore B008
+      - name: Tests
+        run: python -m pytest -q
+
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      NEXT_PUBLIC_API_URL: https://example.invalid
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit -p .
+      - run: npx next build
