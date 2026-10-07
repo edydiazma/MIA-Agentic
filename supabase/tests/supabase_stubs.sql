@@ -9,6 +9,9 @@ create schema if not exists auth;
 create or replace function auth.uid() returns uuid language sql stable as
   $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
 
+create or replace function auth.jwt() returns jsonb language sql stable as
+  $$ select coalesce(nullif(current_setting('request.jwt.claims', true), ''), '{}')::jsonb $$;
+
 create schema if not exists realtime;
 create table if not exists realtime.messages (
   id bigserial primary key, topic text, event text, payload jsonb, private boolean default true

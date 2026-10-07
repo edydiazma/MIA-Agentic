@@ -15,8 +15,9 @@ from app.routers.bots import bot_out
 from app.routers.memory import RunOut, run_out
 from app.schemas import BotOut, UTCDateTime
 from app.settings_store import add_revision
+from app.plans import feature_required
 
-router = APIRouter(prefix="/api/seller", tags=["seller"])
+router = APIRouter(prefix="/api/seller", tags=["seller"], dependencies=[Depends(feature_required("seller"))])
 
 
 class RunIn(BaseModel):

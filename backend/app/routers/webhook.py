@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.ingest import process_webhook
 from app.models import InboundEvent, utcnow
+from app.tenancy import org_for_webhook
 from app.whatsapp import verify_signature
 
 router = APIRouter(prefix="/webhooks/whatsapp", tags=["webhook"])
@@ -52,7 +53,9 @@ async def receive(request: Request, background: BackgroundTasks):
         raise HTTPException(400, "JSON inválido") from None
     # Se guarda el payload crudo (retención corta) y se responde 200 de inmediato; Meta reintenta si tardamos.
     async with SessionLocal() as s:
-        ev = InboundEvent(organization_id=settings.organization_id, source="whatsapp", payload=payload)
+        # La empresa sale del número (phone_number_id / waba_id) del payload; NULL si no se reconoce
+        org = await org_for_webhook(s, payload)
+        ev = InboundEvent(organization_id=org, source="whatsapp", payload=payload)
         s.add(ev)
         await s.commit()
         event_id, received_at = ev.id, ev.received_at

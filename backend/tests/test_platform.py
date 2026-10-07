@@ -18,7 +18,7 @@ async def test_groups_and_auto_assign(client, monkeypatch):
     a = (await c.post("/api/agents", json={
         "email": "luis@test.com", "name": "Luis", "password": "12345678", "group_ids": [g["id"]]})).json()
     assert a["group_ids"] == [g["id"]]
-    monkeypatch.setattr(hub, "online_agent_ids", lambda: {a["id"]})
+    monkeypatch.setattr(hub, "online_agent_ids", lambda organization_id=None: {a["id"]})
 
     await c.post("/webhooks/whatsapp", json=text("571110000001", "g.1", "quiero un asesor de ventas"))
     await settle()
@@ -122,7 +122,7 @@ async def test_statuses_billing_optout_and_meta_alerts(client):
     assert billing["categories"]["service"]["billable"] >= 1
 
     await c.post("/webhooks/whatsapp", json=status("failed", errors=[{"code": 131050, "title": "opt-out"}]))
-    await c.post("/webhooks/whatsapp", json={"entry": [{"changes": [{
+    await c.post("/webhooks/whatsapp", json={"entry": [{"id": "WABA", "changes": [{
         "field": "message_template_status_update",
         "value": {"event": "PAUSED", "message_template_name": "promo", "reason": "Calidad baja"}}]}]})
     await settle(0.1)

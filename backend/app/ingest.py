@@ -9,7 +9,6 @@ from app import storage, templates
 from app.agent import schedule_reply
 from app.ai.transcribe import transcribe
 from app.automations import on_inbound
-from app.config import get_settings
 from app.db import SessionLocal, set_actor
 from app.models import CampaignRecipient, Channel, Contact, Message, MessageWaId, utcnow
 from app.realtime import hub
@@ -72,10 +71,14 @@ async def process_webhook(payload: dict) -> None:
             field = change.get("field", "messages")
             value = change.get("value", {})
             try:
-                if field == "messages":
+                if field == "calls":  # WhatsApp Business Calling API (app/voice/calls.py)
+                    from app.voice.calls import handle_calls_webhook
+
+                    await handle_calls_webhook(value)
+                elif field == "messages":
                     phone_number_id = value.get("metadata", {}).get("phone_number_id")
                     for status in value.get("statuses", []):
-                        await _handle_status(status)
+                        await _handle_status(status, phone_number_id)
                     profiles = {c["wa_id"]: c.get("profile", {}).get("name") for c in value.get("contacts", [])}
                     for m in value.get("messages", []):
                         await _handle_message(phone_number_id, m, profiles.get(m["from"]))
@@ -89,7 +92,7 @@ async def process_webhook(payload: dict) -> None:
 
 
 # --- Estados de mensajes salientes ----------------------------------------------
-async def _handle_status(status: dict) -> None:
+async def _handle_status(status: dict, phone_number_id: str | None = None) -> None:
     async with SessionLocal() as session:
         new = status["status"]
         errors = status.get("errors", [])
@@ -101,7 +104,9 @@ async def _handle_status(status: dict) -> None:
         msg = None
         if ref:
             msg = await session.get(Message, (ref.message_id, ref.message_created_at))
-        org = ref.organization_id if ref else get_settings().organization_id
+        # Multiempresa: la empresa sale del mensaje o del número que recibe; nunca de la configuración
+        org = ref.organization_id if ref else await session.scalar(
+            select(Channel.organization_id).where(Channel.phone_number_id == phone_number_id)) if phone_number_id else None
 
         recipient = await session.scalar(select(CampaignRecipient).where(CampaignRecipient.wa_message_id == status["id"]))
         if recipient:
@@ -117,7 +122,7 @@ async def _handle_status(status: dict) -> None:
                 recipient.read_at = recipient.read_at or now
                 recipient.delivered_at = recipient.delivered_at or now
 
-        if any(e.get("code") == OPT_OUT_CODE for e in errors):
+        if org and any(e.get("code") == OPT_OUT_CODE for e in errors):
             contact = await session.scalar(select(Contact).where(
                 Contact.organization_id == org, Contact.wa_id == status.get("recipient_id")))
             if contact and not contact.marketing_opt_out:
@@ -140,21 +145,23 @@ async def _handle_status(status: dict) -> None:
                 msg.status = new
         await session.commit()
         if msg:
-            await hub.broadcast("message.status", message_out(msg))
+            await hub.broadcast("message.status", message_out(msg), msg.organization_id)
 
 
 # --- Alertas de la cuenta (plantillas, calidad, cuenta) -------------------------
-async def _org_for_waba(session, waba_id: str | None) -> int:
-    if waba_id:
-        org = await session.scalar(select(Channel.organization_id).where(Channel.waba_id == waba_id).limit(1))
-        if org:
-            return org
-    return get_settings().organization_id
+async def _org_for_waba(session, waba_id: str | None) -> int | None:
+    """Empresa dueña de la cuenta de WhatsApp (None si no es de ninguna: el evento se ignora)."""
+    if not waba_id:
+        return None
+    return await session.scalar(select(Channel.organization_id).where(Channel.waba_id == waba_id).limit(1))
 
 
 async def _handle_account_event(waba_id: str | None, field: str, v: dict) -> None:
     async with SessionLocal() as session:
         org = await _org_for_waba(session, waba_id)
+        if org is None:
+            log.warning("Evento %s de una cuenta de WhatsApp no registrada (%s): se ignora", field, waba_id)
+            return
         if field == "message_template_status_update":
             await templates.invalidate(session, org)
             await session.commit()
@@ -237,6 +244,9 @@ async def _handle_message(phone_number_id: str, m: dict, profile_name: str | Non
                 msg.error = f"No se pudo descargar el archivo: {e}"[:2000]
 
         await record_message(session, conv, msg)
+        from app.attribution import on_inbound as attribute  # ref_code web / Click to WA (app/attribution.py)
+
+        await attribute(session, conv, msg, m)
         from app.flows.engine import handle_inbound as flows_inbound
 
         # Orden: flujos (incluida una espera de respuesta) → automatizaciones → bot de IA

@@ -10,6 +10,7 @@ from app.db import get_session
 from app.models import Agent, AIAgent, AIAgentKnowledge, Channel, Cortex, KnowledgeDoc
 from app.schemas import BotOut, BotUpdate
 from app.settings_store import add_revision
+from app.plans import enforce_limit
 
 router = APIRouter(prefix="/api/bots", tags=["ai-agents"])
 
@@ -106,6 +107,7 @@ async def get_one(bot_id: int, agent: Agent = Depends(current_agent), session: A
 async def create_bot(body: BotCreate, agent: Agent = Depends(require_admin), session: AsyncSession = Depends(get_session)):
     data = body.model_dump()
     await validate_bot_changes(session, agent.organization_id, data)
+    await enforce_limit(session, agent.organization_id, "ai_agents")
     bot = AIAgent(organization_id=agent.organization_id, **data)
     session.add(bot)
     await session.flush()

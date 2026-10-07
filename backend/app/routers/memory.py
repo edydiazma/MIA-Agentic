@@ -12,8 +12,9 @@ from app.db import get_session
 from app.learning import MEMORY_KINDS, start_memory_run
 from app.models import Agent, Cortex, LearningRun, MemoryItem, utcnow
 from app.schemas import UTCDateTime
+from app.plans import feature_required
 
-router = APIRouter(prefix="/api/memory", tags=["memory"])
+router = APIRouter(prefix="/api/memory", tags=["memory"], dependencies=[Depends(feature_required("memory"))])
 STATUSES = ("pending", "approved", "rejected")
 
 

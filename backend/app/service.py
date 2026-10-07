@@ -126,9 +126,9 @@ async def reload(session: AsyncSession, conv: Conversation) -> Conversation:
 
 async def broadcast_conversation(conv: Conversation, event: str = "conversation.updated") -> None:
     data = conversation_out(conv)
-    await hub.broadcast("conversation.updated", data)
+    await hub.broadcast("conversation.updated", data, conv.organization_id)
     if event != "conversation.updated":
-        await hub.broadcast(event, data)
+        await hub.broadcast(event, data, conv.organization_id)
 
 
 async def commit_and_broadcast(session: AsyncSession, conv: Conversation, event: str = "conversation.updated") -> None:
@@ -179,7 +179,7 @@ async def record_message(session: AsyncSession, conv: Conversation, msg: Message
     session.add(msg)
     await session.commit()
     await reload(session, conv)
-    await hub.broadcast("message.new", message_out(msg))
+    await hub.broadcast("message.new", message_out(msg), conv.organization_id)
     await broadcast_conversation(conv)
     return msg
 
@@ -311,5 +311,5 @@ async def create_alert(session: AsyncSession, org: int, **fields) -> Alert:
     alert = Alert(organization_id=org, **fields)
     session.add(alert)
     await session.commit()
-    await hub.broadcast("alert.new", {"id": alert.id, "title": alert.title, "severity": alert.severity})
+    await hub.broadcast("alert.new", {"id": alert.id, "title": alert.title, "severity": alert.severity}, org)
     return alert

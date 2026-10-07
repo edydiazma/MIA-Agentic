@@ -13,6 +13,7 @@ from app.db import get_session
 from app.models import Agent, Campaign, CampaignRecipient, Channel, Contact, ContactTag, Tag, utcnow
 from app.routers.contacts import normalize_phone
 from app.schemas import UTCDateTime
+from app.plans import enforce_limit
 
 router = APIRouter(prefix="/api", tags=["campaigns"])
 _running: set[asyncio.Task] = set()
@@ -148,6 +149,9 @@ async def start_campaign(campaign_id: int, agent: Agent = Depends(require_admin)
     campaign = await _campaign(session, campaign_id, agent)
     if campaign.status not in ("draft", "scheduled"):
         raise HTTPException(409, "La campaña ya se envió")
+    pending = await session.scalar(select(func.count()).where(
+        CampaignRecipient.campaign_id == campaign.id, CampaignRecipient.status == "pending")) or 0
+    await enforce_limit(session, agent.organization_id, "campaign_recipients_month", needed=pending)
     campaign.status = "running"
     await session.commit()
     task = asyncio.create_task(run_campaign(campaign.id))

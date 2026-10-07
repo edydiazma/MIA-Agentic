@@ -18,6 +18,7 @@ import { Badge, ErrorBox, useAction, useApi } from "@/components/ui";
 import CustomFieldsEditor from "@/components/fields/CustomFieldsEditor";
 import FieldHistory from "@/components/fields/FieldHistory";
 import AIAnalysis from "./AIAnalysis";
+import DealsSection from "@/components/crm/DealsSection";
 
 function in60Days() {
   const d = new Date();
@@ -184,6 +185,8 @@ export default function ContactPanel({
           </p>
         </div>
       )}
+
+      <DealsSection key={contact.id} contact={contact} conversationId={conversation.id} />
 
       <div>
         <h3>Seguimientos</h3>

@@ -179,3 +179,14 @@ async def test_switch_reply_waits_itself_and_repeat_body(client):
     run = (await c.get(f"/api/flows/{fid}/runs")).json()[0]
     assert run["status"] == "succeeded"
     await c.post(f"/api/flows/{fid}/pause")
+
+
+def test_catalog_parity():
+    """El editor (respaldo) y el motor usan exactamente el mismo catálogo de bloques."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    backend = json.loads((root / "backend/app/flows/blocks.json").read_text(encoding="utf-8"))
+    frontend = json.loads((root / "frontend/lib/flow-blocks.json").read_text(encoding="utf-8"))
+    assert backend == frontend, "Copia frontend/lib/flow-blocks.json desde backend/app/flows/blocks.json"

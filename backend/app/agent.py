@@ -276,7 +276,8 @@ async def run_agent(conversation_id: int) -> None:
                 session.add(appt)
                 await session.commit()
                 await hub.broadcast("appointment.created", {
-                    "id": appt.id, "contact_id": conv.contact_id, "starts_at": appt.starts_at.isoformat()})
+                    "id": appt.id, "contact_id": conv.contact_id, "starts_at": appt.starts_at.isoformat()},
+                    conv.organization_id)
                 return f"Cita agendada para el {args['date']} a las {args['time']}. Confírmasela al cliente."
             if name == "search_products":
                 from app import catalog  # import diferido (lo implementa el módulo de catálogo)

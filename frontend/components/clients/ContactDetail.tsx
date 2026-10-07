@@ -19,6 +19,7 @@ import {
 import { Badge, ErrorBox, Field, Loading, Modal, useAction, useApi } from "@/components/ui";
 import CustomFieldsEditor from "@/components/fields/CustomFieldsEditor";
 import FieldHistory from "@/components/fields/FieldHistory";
+import DealsSection from "@/components/crm/DealsSection";
 
 type Detail = Contact & { conversations: Conversation[] };
 
@@ -225,6 +226,8 @@ export default function ContactDetail({
               )}
             </div>
           </div>
+
+          <DealsSection contact={data} heading="h2" />
 
           <div>
             <h2 style={{ marginBottom: 6 }}>Historial de cambios</h2>

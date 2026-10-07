@@ -7,7 +7,7 @@ def _condition_errors(cond, path: str) -> list[dict]:
     if not isinstance(cond, dict) or cond.get("op") not in OPERATORS:
         return [{"path": path, "message": "Condición inválida: usa {op, left, right}"}]
     errors = []
-    for side in ("left", "right"):
+    for side in ("left", "right", "value"):
         if isinstance(cond.get(side), dict) and "op" in cond[side]:
             errors += _condition_errors(cond[side], f"{path}.{side}")
     return errors
@@ -49,8 +49,10 @@ def _blocks_errors(blocks, path: str, ids: set[str], script_ids: set[str], depth
             errors += [{**e, "block_id": bid} for e in _condition_errors(inputs["condition"], f"{p}.inputs.condition")]
         if btype == "send_buttons" and len(inputs.get("buttons") or []) > 3:
             errors.append({"path": f"{p}.inputs.buttons", "message": "Máximo 3 botones", "block_id": bid})
-        if btype == "send_list" and len(inputs.get("options") or []) > 10:
-            errors.append({"path": f"{p}.inputs.options", "message": "Máximo 10 opciones", "block_id": bid})
+        if btype == "send_list" and len(inputs.get("items") or []) > 10:
+            errors.append({"path": f"{p}.inputs.items", "message": "Máximo 10 opciones", "block_id": bid})
+        if btype == "send_media" and not (inputs.get("resource_id") or inputs.get("url")):
+            errors.append({"path": f"{p}.inputs", "message": "Indica un recurso o una URL", "block_id": bid})
         if btype == "repeat" and not 1 <= int(inputs.get("times") or 0) <= 20:
             errors.append({"path": f"{p}.inputs.times", "message": "Entre 1 y 20 repeticiones", "block_id": bid})
         if btype == "http_request" and not str(inputs.get("url", "")).startswith("https://"):

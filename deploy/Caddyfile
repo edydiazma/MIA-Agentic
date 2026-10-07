@@ -5,8 +5,8 @@
 {$DOMAIN} {
 	encode zstd gzip
 
-	# API, WebSocket en tiempo real, webhook de Meta y salud → backend
-	@backend path /api/* /ws /webhooks/* /health /docs /openapi.json
+	# API, WebSocket, webhooks (Meta, Stripe, CRM), script de tracking (/t) y salud → backend
+	@backend path /api/* /ws /webhooks/* /t/* /health /docs /openapi.json
 	handle @backend {
 		reverse_proxy backend:8000
 	}

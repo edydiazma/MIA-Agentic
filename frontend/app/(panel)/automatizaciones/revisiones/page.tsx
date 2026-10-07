@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { api, fmtDateTime, qs, send } from "@/lib/api";
 import type { AIAgent, Cortex, DiffRow, Revision } from "@/lib/ai-types";
+import { jsonDiff } from "@/components/ai/jsonDiff";
 import { Badge, Card, Empty, ErrorBox, Field, Modal, PageHeader, useAction, useApi } from "@/components/ui";
 import { useIsAdmin } from "@/components/config/common";
 import { DiffTable } from "@/components/ai/JsonEditWithAI";
@@ -24,19 +25,6 @@ const SOURCE: Record<string, [string, "info" | "ok" | "neutral" | "warn"]> = {
 };
 
 /** Diff plano por rutas (a.b[0].c) entre dos documentos JSON. */
-export function jsonDiff(a: unknown, b: unknown, path = ""): DiffRow[] {
-  const isObj = (x: unknown) => x !== null && typeof x === "object";
-  if (!isObj(a) || !isObj(b) || Array.isArray(a) !== Array.isArray(b)) {
-    return JSON.stringify(a) === JSON.stringify(b) ? [] : [{ path: path || "(raíz)", before: a, after: b }];
-  }
-  const keys = new Set([...Object.keys(a as object), ...Object.keys(b as object)]);
-  const out: DiffRow[] = [];
-  for (const k of keys) {
-    const p = Array.isArray(a) ? `${path}[${k}]` : path ? `${path}.${k}` : k;
-    out.push(...jsonDiff((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k], p));
-  }
-  return out;
-}
 
 /** Opciones del selector de entidad según el tipo (con texto libre para flujos y automatizaciones). */
 function useEntityOptions(type: string): { value: string; label: string }[] | null {

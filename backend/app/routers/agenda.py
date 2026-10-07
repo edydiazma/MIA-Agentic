@@ -194,7 +194,7 @@ async def create_appointment(body: AppointmentIn, agent: Agent = Depends(current
     await session.commit()
     await session.refresh(a, ["contact", "agent"])
     out = _ap(a)
-    await hub.broadcast("appointment.created", out)
+    await hub.broadcast("appointment.created", out, org)
     return out
 
 

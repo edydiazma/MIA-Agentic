@@ -4,6 +4,7 @@ import { useState } from "react";
 import { API_URL, api, send, type Bot, type Channel, type Template } from "@/lib/api";
 import { Badge, Card, Empty, ErrorBox, Field, Loading, Modal, PageHeader, useAction, useApi } from "@/components/ui";
 import { AdminNotice, ConfigTabs, copy, useIsAdmin } from "@/components/config/common";
+import { EmbeddedSignupButton } from "@/components/saas/EmbeddedSignupButton";
 
 type ChannelsResp = { channels: Channel[]; waba_id: string | null; webhook_path: string; app_secret_configured: boolean };
 type Draft = { id?: number; name: string; phone_number_id: string; display_phone: string; access_token: string; bot_id: number | null };
@@ -59,6 +60,8 @@ export default function PlataformaPage() {
         title="Números de WhatsApp"
         actions={
           isAdmin && (
+            <>
+            <EmbeddedSignupButton onConnected={reload} />
             <button
               className="primary"
               onClick={() => {
@@ -68,6 +71,7 @@ export default function PlataformaPage() {
             >
               Agregar número
             </button>
+            </>
           )
         }
       >

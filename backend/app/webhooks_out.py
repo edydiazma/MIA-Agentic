@@ -12,7 +12,6 @@ import time
 import httpx
 from sqlalchemy import select
 
-from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Alert, OutboundWebhook, WebhookDelivery, utcnow
 from app.secrets_vault import get_secret
@@ -44,12 +43,13 @@ def sign(secret: str, body: bytes) -> str:
     return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
-async def deliver(event: str, data: dict, only_id: int | None = None) -> None:
-    org = get_settings().organization_id
+async def deliver(event: str, data: dict, only_id: int | None = None, organization_id: int | None = None) -> None:
+    """Entrega el evento SOLO a los webhooks de su organización (o al webhook `only_id` en una prueba)."""
     for wid, worg, url, secret, events in await _targets():
-        if only_id is not None and wid != only_id:
-            continue
-        if only_id is None and (worg != org or (events and event not in events)):
+        if only_id is not None:
+            if wid != only_id:
+                continue
+        elif organization_id is None or worg != organization_id or (events and event not in events):
             continue
         body = json.dumps({"event": event, "data": data, "sent_at": utcnow().isoformat()}, default=str).encode()
         status, error = None, None

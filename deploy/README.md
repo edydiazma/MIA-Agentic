@@ -55,9 +55,34 @@ Log in at `https://panel.yourcompany.com` with `ADMIN_EMAIL` / `ADMIN_PASSWORD`,
 In Meta for Developers → your app → WhatsApp → Configuration:
 - Callback URL: `https://panel.yourcompany.com/webhooks/whatsapp`
 - Verify token: the value of `WA_VERIFY_TOKEN`
-- Fields: `messages`, `message_template_status_update`, `message_template_quality_update`,
+- Fields: `messages`, `calls`, `message_template_status_update`, `message_template_quality_update`,
   `phone_number_quality_update`, `account_update`, `account_alerts`
 - `WA_ACCESS_TOKEN` must be a **permanent System User** token (not the 24 h one).
+
+## 4b. Phase 2 integrations (URLs to register with each provider)
+
+Replace `https://panel.yourcompany.com` with your `PUBLIC_BASE_URL`.
+
+| Provider | Where it is configured | URL |
+|---|---|---|
+| **Meta: Embedded Signup** (each SaaS customer connects their number) | App → Facebook Login for Business → Configuration (`META_EMBEDDED_SIGNUP_CONFIG_ID`) | Allowed domain: `panel.yourcompany.com` |
+| **Meta: Calls** | Webhook field `calls` (same URL as messages) | `https://panel.yourcompany.com/webhooks/whatsapp` |
+| **Google Ads** (offline conversions) | Google Cloud → OAuth client (web) → Authorized redirect URI | `https://panel.yourcompany.com/api/attribution/oauth/google_ads/callback` |
+| **HubSpot** | Developer app → Auth → Redirect URL | `https://panel.yourcompany.com/api/integrations/hubspot/callback` |
+| **HubSpot** (webhooks, optional) | Developer app → Webhooks | `https://panel.yourcompany.com/api/integrations/hubspot/webhook` |
+| **Salesforce** | Setup → App Manager → Connected App → Callback URL | `https://panel.yourcompany.com/api/integrations/salesforce/callback` |
+| **Stripe** | Developers → Webhooks (events: `checkout.session.completed`, `customer.subscription.*`, `invoice.paid`, `invoice.payment_failed`) | `https://panel.yourcompany.com/api/billing/webhook` |
+| **Web tracking** | Each customer pastes the script (or the GTM tag) shown in Configuraciones → Atribución web | `https://panel.yourcompany.com/t/<public_key>.js` |
+
+Stripe: create one *Price* per plan and save its id in the back-office (`/plataforma` → Plans).
+
+### Voice (AI voice agents)
+
+- Calls **answered by an advisor from the browser**: the audio goes directly browser ↔ Meta (WebRTC); the server only relays signaling. No extra ports needed.
+- Calls **answered by the AI voice agent**: the backend creates the WebRTC session (aiortc) and connects it to the realtime model. That needs **UDP** between Meta and the instance:
+  - Security Group: allow inbound UDP on the ephemeral range (e.g. `32768-60999`) or, better, put the voice agent behind a TURN server (coturn) and set `VOICE_STUN_URLS`.
+  - Docker: use `network_mode: host` for the backend service (Docker NAT breaks ICE), or run the voice agent outside Docker.
+  - Unverified on EC2 so far (it was tested locally over loopback): validate a real call before enabling it for customers.
 
 ## 5. Updates
 

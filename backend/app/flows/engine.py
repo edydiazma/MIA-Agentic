@@ -113,7 +113,8 @@ def evaluate(cond, scope: dict):
     if not isinstance(cond, dict) or "op" not in cond:
         return render(cond, scope)
     op = cond["op"]
-    left = render(cond.get("left"), scope)
+    # not / length usan "value" (formato del editor); se acepta "left" por compatibilidad
+    left = render(cond.get("value", cond.get("left")), scope)
     right = render(cond.get("right"), scope)
     if op == "and":
         return bool(left) and bool(right)
@@ -308,7 +309,7 @@ class Runner:
             return None, {"buttons": [b["title"] for b in buttons]}
         if t == "send_list":
             rows = [{"id": f"{block['id']}:{i}", "title": str(o if isinstance(o, str) else o.get("title", ""))[:24]}
-                    for i, o in enumerate(inputs.get("options") or [])][:10]
+                    for i, o in enumerate(inputs.get("items") or inputs.get("options") or [])][:10]
             if dry:
                 self.sim.messages.append({"text": inputs.get("text"), "list": [r["title"] for r in rows]})
             else:
@@ -321,8 +322,17 @@ class Runner:
             return None, {"options": [r["title"] for r in rows]}
         if t == "send_media":
             if dry:
-                self.sim.messages.append({"text": f"[archivo #{inputs.get('resource_id')}] {inputs.get('caption') or ''}"})
-                return None, {"resource_id": inputs.get("resource_id")}
+                ref = inputs.get("resource_id") or inputs.get("url")
+                self.sim.messages.append({"text": f"[archivo {ref}] {inputs.get('caption') or ''}"})
+                return None, {"resource": ref}
+            if not inputs.get("resource_id"):
+                if not str(inputs.get("url", "")).startswith("https://"):
+                    raise FlowError("Indica un recurso o una URL https")
+                client = await self._client()
+                wid = await client.send_image_link(self.conv.contact.wa_id, str(inputs["url"]), inputs.get("caption"))
+                await self._record(Message(direction="out", sender_type="flow", type="image", text=inputs.get("caption"),
+                                           wa_message_id=wid, status="sent", metadata_={"url": inputs["url"]}))
+                return None, {"url": inputs["url"]}
             from app.storage import download, kind_for_mime
 
             res = await self.session.get(Resource, int(inputs["resource_id"]))
@@ -339,7 +349,7 @@ class Runner:
             return None, {"resource": res.name}
         if t == "send_template":
             values = [str(v) for v in inputs.get("values") or []]
-            tpl_ref = inputs.get("template") or {}
+            tpl_ref = inputs.get("name") or inputs.get("template") or {}
             name = tpl_ref.get("name") if isinstance(tpl_ref, dict) else str(tpl_ref)
             language = tpl_ref.get("language", "es") if isinstance(tpl_ref, dict) else "es"
             if dry:
@@ -356,7 +366,7 @@ class Runner:
             return None, {"template": name}
         if t == "send_product":
             if dry:
-                self.sim.messages.append({"text": f"[producto {inputs.get('sku') or inputs.get('query')}]"})
+                self.sim.messages.append({"text": f"[producto {inputs.get('sku') or inputs.get('search')}]"})
                 return None, None
             from app import catalog as cat
             from app.models import Product
@@ -365,8 +375,9 @@ class Runner:
             if inputs.get("sku"):
                 product = await self.session.scalar(select(Product).where(
                     Product.organization_id == self.conv.organization_id, Product.sku == str(inputs["sku"])))
-            elif inputs.get("query"):
-                found = await cat.search(self.session, self.conv.organization_id, str(inputs["query"]), limit=1)
+            elif inputs.get("search") or inputs.get("query"):
+                found = await cat.search(self.session, self.conv.organization_id,
+                                         str(inputs.get("search") or inputs.get("query")), limit=1)
                 product = found[0] if found else None
             if not product:
                 raise FlowError("No se encontró el producto")
@@ -637,12 +648,15 @@ def _jsonable(value):
 def script_matches(script: dict, trigger_type: str, text: str | None) -> bool:
     trig = script.get("trigger") or {}
     if trigger_type == "inbound_message":
-        if trig.get("type") == "inbound_message":
+        config = trig.get("config") or {}
+        kws = config.get("keywords") or []
+        kws = [k for k in (kws if isinstance(kws, list) else str(kws).split(",")) if norm(str(k))]
+        if trig.get("type") == "inbound_message" and not kws:
             return True
-        if trig.get("type") == "keyword":
-            kws = (trig.get("config") or {}).get("keywords") or []
-            kws = kws if isinstance(kws, list) else str(kws).split(",")
-            return any(norm(k) and norm(k) in norm(text or "") for k in kws)
+        if trig.get("type") in ("keyword", "inbound_message"):
+            if config.get("match") == "exact":
+                return any(norm(str(k)) == norm(text or "") for k in kws)
+            return any(norm(str(k)) in norm(text or "") for k in kws)
         return False
     return trig.get("type") == trigger_type
 

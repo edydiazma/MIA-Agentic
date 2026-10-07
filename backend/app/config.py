@@ -34,6 +34,37 @@ class Settings(BaseSettings):
     supabase_secret_key: str = ""  # sb_secret_...: solo backend (Storage, Admin API)
     supabase_jwks_url: str = ""  # verificar tokens de Supabase Auth (claves asimétricas)
 
+    # URL pública del despliegue (callbacks OAuth, script de tracking, webhooks)
+    public_base_url: str = "http://localhost:8000"
+    frontend_base_url: str = "http://localhost:3000"
+
+    # Atribución y conversiones
+    tracking_ip_salt: str = "cambia-esta-sal"
+    google_ads_developer_token: str = ""
+    google_ads_login_customer_id: str = ""  # MCC, si aplica
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    meta_app_id: str = ""
+    meta_app_secret: str = ""
+    meta_capi_token: str = ""  # token de sistema con ads_management/business_management (CAPI)
+    meta_embedded_signup_config_id: str = ""
+
+    # CRM
+    hubspot_client_id: str = ""
+    hubspot_client_secret: str = ""
+    salesforce_client_id: str = ""
+    salesforce_client_secret: str = ""
+    salesforce_login_url: str = "https://login.salesforce.com"
+
+    # SaaS / facturación
+    saas_signup_enabled: bool = True
+    saas_trial_days: int = 14
+    saas_default_plan: str = "professional"
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    platform_admin_email: str = ""  # primer administrador del back-office (si la tabla está vacía)
+    platform_admin_password: str = ""
+
     # IA
     anthropic_api_key: str = ""
     openai_api_key: str = ""

@@ -171,7 +171,80 @@ table has a `DEFAULT` partition so no insert is lost.
 
 `supabase/seed.sql` creates the initial organization.
 
-## 9. Feature log (data-model changes)
+## 10. Phase 2: attribution, CRM, voice and multi-company SaaS
+
+### 10.1 Attribution and conversions (Click to WA Google, web traffic, Google Ads / Meta CAPI)
+
+```mermaid
+erDiagram
+  tracking_sites ||--o{ web_sessions : "partitioned"
+  web_sessions ||--o{ web_events : "partitioned"
+  web_sessions |o--o| attributions : "ref code"
+  conversations ||--o| attributions : ""
+  conversion_actions ||--o{ conversion_events : ""
+  conversion_events ||--o{ conversion_uploads : "per destination"
+```
+
+- `tracking_sites`: site with its public key (`public_key`) for the script/GTM, allowed domains and channel.
+- `web_sessions` (**partitioned**): visit with `ref_code` (short code that travels in the wa.me prefilled text),
+  UTMs, `gclid/gbraid/wbraid`, `fbclid/fbc/fbp`, `ttclid`, `msclkid`, GA `client_id`, landing page and
+  referrer, hashed IP (privacy). `wa_click_at` and `matched_conversation_id` close the loop.
+- `web_events` (**partitioned**): `page_view`, `wa_click`, `custom` → "Web traffic" report.
+- `attributions`: one per conversation (last touch): channel `meta_ctwa | google_ads | meta_ads_web | paid_other |
+  organic_web | campaign | direct`, the matched session and the click identifiers (`gclid`, `ctwa_clid`, `fbc`).
+- `conversion_actions`: what counts as a conversion (`typification` with `is_success`, change to stage
+  `client`, `appointment_booked`, `deal_won`) and where it goes (Google Ads conversion action, Meta CAPI
+  dataset/pixel) with value and currency.
+- `conversion_events`: each conversion that happened, with an attribution snapshot and hashed user data
+  (SHA-256 of email/phone, normalized) for Enhanced Conversions / CAPI.
+- `conversion_uploads`: delivery outbox per destination with retries (`pending → sent | failed | skipped`).
+
+### 10.2 CRM (HubSpot and Salesforce)
+
+- `deals`: local deal (contact, conversation, amount, currency, stage, `open | won | lost`, owner). It feeds
+  CRM syncing, conversions (`deal_won`) and the "best salesperson" ranking by **amount**.
+- `integration_connections`: an account connected per provider (`hubspot | salesforce | google_ads | meta`),
+  OAuth tokens in Vault (`access/refresh_token_secret_id`), `expires_at`, `external_account_id` (portal id,
+  instance URL, customer id), scopes and status. (The old `integrations` table stays as the
+  Centro de Control catalog.)
+- `integration_mappings`: field ⇄ property mapping per object (`contact`, `deal`) and direction
+  (`push | pull | both`), with optional transformation.
+- `external_links`: local entity ⇄ remote id (`contact ⇄ HubSpot contact`, `deal ⇄ Salesforce Opportunity`),
+  with `remote_updated_at` and `sync_hash` to avoid loops in two-way syncing.
+- `integration_outbox` (**partitioned**): changes to push (upsert contact/deal, conversation note) with
+  retries and exponential backoff; it is filled by the backend and by triggers.
+- Webhooks from HubSpot/Salesforce enter through `inbound_events` (new `source` values).
+
+### 10.3 Voice: WhatsApp Business Calling API
+
+- `voice_agents`: voice agent (uses an `ai_agent` for prompt/knowledge/memory, plus voice: provider,
+  voice, language, greeting, maximum duration, transfer rules, business hours).
+- `calls`: each call (`wa_call_id` unique, direction, status `ringing → connected → ended | missed |
+  rejected | failed`, handled by `voice_agent` or `agent`, times, duration, end reason, recording
+  in Storage, transcript, AI summary, and the conversation it belongs to).
+- `call_events` (**partitioned**): Meta webhooks and internal events (SDP, pre-accept, transfer...).
+- `call_turns`: conversational turns (speaker, text, offsets in ms) to read the transcript.
+- `channels.calling_enabled` + `calling_hours`. New `conversation_events` events: `call_started`,
+  `call_ended`. New message type `call` (a summary card in the chat).
+
+### 10.4 Multi-company SaaS
+
+- `plans`: Team / Professional / Enterprise with `limits` (channels, users, monthly conversations, AI agents,
+  flows, voice minutes, campaign recipients, AI tokens) and `features` (flows, voice, crm, attribution, api).
+- `organizations` + `status` (`trial | active | past_due | suspended | cancelled`), `plan_id`, `trial_ends_at`,
+  `country`, `billing_email`.
+- `subscriptions`: one per organization with a payment provider (`stripe`), external id, status and period.
+- `billing_events`: payment provider webhooks (idempotent by `provider_event_id`).
+- `usage_counters`: monthly consumption per metric (`conversations`, `messages_out`, `ai_cost_usd`,
+  `voice_minutes`, `campaign_recipients`), maintained by **triggers** on `conversations`, `messages`,
+  `ai_calls`, `calls` and `campaign_recipients`. `check_limit()` in SQL decides whether something can be created.
+- `platform_admins`: back office for the SaaS owner (organizations, plans, consumption, suspensions).
+- Users in several companies: `agents` is a per-organization membership; login chooses the organization when the
+  email belongs to more than one. `agents.auth_user_id` is unique **per organization**.
+- Webhooks: the organization is resolved by `channels.phone_number_id` (never by configuration).
+- Onboarding: Meta **Embedded Signup** connects each customer's WhatsApp number (token in Vault).
+
+## 11. Feature log (data-model changes)
 
 | Date | Feature | Model change |
 |---|---|---|
@@ -180,4 +253,7 @@ table has a `DEFAULT` partition so no insert is lost.
 | 2026-10-06 | Memory, best salesperson, catalog | `memory_items`, `learning_runs`, `seller_profiles`, `contacts.memory`, `products`, `catalog_sync_runs`, `ai_agents.use_*` |
 | 2026-10-06 | Cortex with failover + JSON editable with AI | `ai_connections`, `cortexes`, `cortex_members`, `ai_connection_health`, `ai_calls`, `config_revisions` |
 | 2026-10-06 | Flows (Scratch Jr / Scratch 3) | `flows`, `flow_versions`, `flow_runs`, `flow_run_steps` |
+| 2026-10-07 | Backend moved onto the Supabase model | The ORM mirrors the migrations (`test_schema`); 37 tests on real Postgres; storage in Supabase Storage; secrets in Vault |
+| 2026-10-07 | Flow engine | No schema changes: uses `flows`, `flow_versions`, `flow_runs` (`context` = variables + resumable execution stack), `flow_run_steps`. Shared block catalog `blocks.json` |
+| 2026-10-08 | Phase 2 (model) | Attribution, CRM, voice and SaaS: migrations 11–14 (section 10) |
 | 2026-10-07 | Security hardening (Supabase advisors) | Fixed `search_path` on functions; `pg_trgm`/`citext` → `extensions` schema; RLS helpers and Realtime triggers → `private` schema (not exposed through `/rest/v1/rpc`) |

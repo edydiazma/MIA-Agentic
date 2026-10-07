@@ -96,13 +96,15 @@ async def test_memory_and_best_seller(client):
     c = client
     luis_id, marta_id = await _seed_sales()
 
-    r = await c.post("/api/memory/runs", json={"typifications": ["Venta"], "max_conversations": 10})
+    first_call = len(llm_inputs)  # la corrida procesa por lotes: se revisan todas sus llamadas, no solo la última
+    r = await c.post("/api/memory/runs", json={"typifications": ["Venta"], "max_conversations": 50})
     assert r.status_code == 200, r.text
     run = await wait_run(c, f"/api/memory/runs/{r.json()['id']}")
     assert run["status"] == "done", run["error"]
     # La base es compartida entre pruebas: puede haber otras ventas cerradas además de las de Luis y Marta
     assert run["stats"]["conversations"] >= 4 and run["stats"]["proposed"] == 2
-    assert "Está muy caro el Onix" in llm_inputs[-1] and "Asesor Luis L" in llm_inputs[-1]
+    run_inputs = "\n".join(llm_inputs[first_call:])
+    assert "Está muy caro el Onix" in run_inputs and "Asesor Luis L" in run_inputs
 
     items = (await c.get("/api/memory/items", params={"status": "pending"})).json()["items"]
     precio = next(i for i in items if i["title"] == "Precio alto")

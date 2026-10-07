@@ -9,7 +9,20 @@ Reglas:
 
 from datetime import UTC, date, datetime
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Computed,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    SmallInteger,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, REAL, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -47,6 +60,12 @@ class Organization(Base):
     slug: Mapped[str] = mapped_column(Text)
     timezone: Mapped[str] = mapped_column(Text, default="America/Bogota")
     plan: Mapped[str] = mapped_column(Text, default="internal")
+    # SaaS (migración 14)
+    status: Mapped[str] = mapped_column(Text, default="active")  # trial | active | past_due | suspended | cancelled
+    plan_id: Mapped[int | None] = fk("plans.id")
+    trial_ends_at: Mapped[datetime | None] = ts(nullable=True)
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    billing_email: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = ts(default=utcnow)
     updated_at: Mapped[datetime] = ts(default=utcnow)
 
@@ -131,10 +150,14 @@ class Channel(Base):
     display_phone: Mapped[str | None] = mapped_column(Text, nullable=True)
     access_token_secret_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
     default_ai_agent_id: Mapped[int | None] = fk("ai_agents.id")
+    # Llamadas de WhatsApp (migración 13)
+    calling_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    calling_hours: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    voice_agent_id: Mapped[int | None] = fk("voice_agents.id")
     created_at: Mapped[datetime] = ts(default=utcnow)
     updated_at: Mapped[datetime] = ts(default=utcnow)
 
-    ai_agent: Mapped["AIAgent | None"] = relationship(lazy="joined")
+    ai_agent: Mapped["AIAgent | None"] = relationship(lazy="joined", foreign_keys=[default_ai_agent_id])
 
 
 class Contact(Base):
@@ -924,4 +947,401 @@ class Alert(Base):
     ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     resolved_at: Mapped[datetime | None] = ts(nullable=True)
     resolved_by: Mapped[int | None] = fk("agents.id")
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+# =============================================================================
+# 11 · Atribución y conversiones
+# =============================================================================
+class TrackingSite(Base):
+    __tablename__ = "tracking_sites"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    name: Mapped[str] = mapped_column(Text)
+    public_key: Mapped[str] = mapped_column(Text, server_default=text("replace(gen_random_uuid()::text, '-', '')"))
+    allowed_domains: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    channel_id: Mapped[int | None] = fk("channels.id")
+    wa_prefill: Mapped[str] = mapped_column(Text, default="Hola, quiero más información")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class WebSession(Base):
+    """Particionada: PK (id, created_at)."""
+
+    __tablename__ = "web_sessions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    organization_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("organizations.id"))
+    site_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("tracking_sites.id"))
+    visitor_id: Mapped[str] = mapped_column(Text)
+    ref_code: Mapped[str] = mapped_column(Text)
+    landing_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    referrer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_medium: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_campaign: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_term: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gclid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gbraid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    wbraid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fbclid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fbc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fbp: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ttclid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    msclkid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ga_client_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ip_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    country: Mapped[str | None] = mapped_column(Text, nullable=True)
+    wa_click_at: Mapped[datetime | None] = ts(nullable=True)
+    matched_conversation_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    matched_at: Mapped[datetime | None] = ts(nullable=True)
+    last_seen_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class WebEvent(Base):
+    """Particionada: PK (id, created_at)."""
+
+    __tablename__ = "web_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    organization_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("organizations.id"))
+    session_id: Mapped[int] = mapped_column(BigInteger)
+    type: Mapped[str] = mapped_column(Text)  # page_view | wa_click | custom
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Attribution(Base):
+    __tablename__ = "attributions"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    conversation_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("conversations.id", ondelete="CASCADE"))
+    contact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("contacts.id", ondelete="CASCADE"))
+    channel: Mapped[str] = mapped_column(Text)
+    matched_by: Mapped[str] = mapped_column(Text)
+    web_session_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    web_session_at: Mapped[datetime | None] = ts(nullable=True)
+    utm_source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_medium: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_campaign: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    utm_term: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gclid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gbraid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    wbraid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fbc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fbp: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ctwa_clid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    landing_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class ConversionAction(Base):
+    __tablename__ = "conversion_actions"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    name: Mapped[str] = mapped_column(Text)
+    trigger: Mapped[str] = mapped_column(Text)  # typification | stage_client | appointment_booked | deal_won
+    typification_id: Mapped[int | None] = fk("typifications.id")
+    value: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    currency: Mapped[str] = mapped_column(String(3), default="COP")
+    google_ads: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    meta: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class ConversionEvent(Base):
+    __tablename__ = "conversion_events"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    action_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("conversion_actions.id", ondelete="CASCADE"))
+    conversation_id: Mapped[int | None] = fk("conversations.id")
+    contact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("contacts.id", ondelete="CASCADE"))
+    value: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    currency: Mapped[str] = mapped_column(String(3))
+    occurred_at: Mapped[datetime] = ts(default=utcnow)
+    attribution: Mapped[dict] = mapped_column(JSONB, default=dict)
+    hashed_phone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hashed_email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dedupe_key: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+    action: Mapped[ConversionAction] = relationship(lazy="joined")
+
+
+class ConversionUpload(Base):
+    __tablename__ = "conversion_uploads"
+
+    id: Mapped[int] = pk()
+    event_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("conversion_events.id", ondelete="CASCADE"))
+    destination: Mapped[str] = mapped_column(Text)  # google_ads | meta_capi
+    status: Mapped[str] = mapped_column(Text, default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = ts(default=utcnow)
+    response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sent_at: Mapped[datetime | None] = ts(nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+    event: Mapped[ConversionEvent] = relationship(lazy="joined")
+
+
+# =============================================================================
+# 12 · CRM
+# =============================================================================
+class Deal(Base):
+    __tablename__ = "deals"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    contact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("contacts.id", ondelete="CASCADE"))
+    conversation_id: Mapped[int | None] = fk("conversations.id")
+    owner_agent_id: Mapped[int | None] = fk("agents.id")
+    name: Mapped[str] = mapped_column(Text)
+    amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    currency: Mapped[str] = mapped_column(String(3), default="COP")
+    pipeline: Mapped[str] = mapped_column(Text, default="default")
+    stage: Mapped[str] = mapped_column(Text, default="new")
+    status: Mapped[str] = mapped_column(Text, default="open")  # open | won | lost
+    source: Mapped[str] = mapped_column(Text, default="agent")
+    expected_close: Mapped[date | None] = mapped_column(Date, nullable=True)
+    closed_at: Mapped[datetime | None] = ts(nullable=True)
+    lost_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+    contact: Mapped[Contact] = relationship(lazy="joined")
+    owner: Mapped[Agent | None] = relationship(lazy="joined")
+
+
+class IntegrationConnection(Base):
+    __tablename__ = "integration_connections"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    provider: Mapped[str] = mapped_column(Text)  # hubspot | salesforce | google_ads | meta
+    status: Mapped[str] = mapped_column(Text, default="connected")
+    external_account_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    instance_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_token_secret_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    refresh_token_secret_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
+    expires_at: Mapped[datetime | None] = ts(nullable=True)
+    scopes: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
+    settings: Mapped[dict] = mapped_column(JSONB, default=dict)
+    sync_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_sync_at: Mapped[datetime | None] = ts(nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    connected_by: Mapped[int | None] = fk("agents.id")
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class IntegrationMapping(Base):
+    __tablename__ = "integration_mappings"
+
+    id: Mapped[int] = pk()
+    connection_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("integration_connections.id", ondelete="CASCADE"))
+    object: Mapped[str] = mapped_column(Text)  # contact | deal
+    local_field: Mapped[str] = mapped_column(Text)
+    remote_property: Mapped[str] = mapped_column(Text)
+    direction: Mapped[str] = mapped_column(Text, default="both")  # push | pull | both
+    transform: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+class ExternalLink(Base):
+    __tablename__ = "external_links"
+
+    id: Mapped[int] = pk()
+    connection_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("integration_connections.id", ondelete="CASCADE"))
+    local_type: Mapped[str] = mapped_column(Text)
+    local_id: Mapped[int] = mapped_column(BigInteger)
+    remote_type: Mapped[str] = mapped_column(Text)
+    remote_id: Mapped[str] = mapped_column(Text)
+    remote_updated_at: Mapped[datetime | None] = ts(nullable=True)
+    sync_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_synced_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class IntegrationOutbox(Base):
+    """Particionada: PK (id, created_at)."""
+
+    __tablename__ = "integration_outbox"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    organization_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("organizations.id"))
+    connection_id: Mapped[int] = mapped_column(BigInteger)
+    entity_type: Mapped[str] = mapped_column(Text)  # contact | deal | conversation_note
+    entity_id: Mapped[int] = mapped_column(BigInteger)
+    operation: Mapped[str] = mapped_column(Text, default="upsert")
+    payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(Text, default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = ts(default=utcnow)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sent_at: Mapped[datetime | None] = ts(nullable=True)
+
+
+# =============================================================================
+# 13 · Voz
+# =============================================================================
+class VoiceAgent(Base):
+    __tablename__ = "voice_agents"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    name: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    ai_agent_id: Mapped[int | None] = fk("ai_agents.id")
+    provider: Mapped[str] = mapped_column(Text, default="openai_realtime")
+    model: Mapped[str] = mapped_column(Text, default="gpt-realtime")
+    voice: Mapped[str] = mapped_column(Text, default="alloy")
+    language: Mapped[str] = mapped_column(Text, default="es")
+    greeting: Mapped[str] = mapped_column(Text, default="Hola, gracias por llamar. ¿En qué te puedo ayudar?")
+    max_duration_s: Mapped[int] = mapped_column(Integer, default=600)
+    transfer_group_id: Mapped[int | None] = fk("groups.id")
+    record_calls: Mapped[bool] = mapped_column(Boolean, default=True)
+    settings: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class Call(Base):
+    __tablename__ = "calls"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    channel_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("channels.id"))
+    contact_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("contacts.id", ondelete="CASCADE"))
+    conversation_id: Mapped[int | None] = fk("conversations.id")
+    wa_call_id: Mapped[str] = mapped_column(Text)
+    direction: Mapped[str] = mapped_column(Text)  # inbound | outbound
+    status: Mapped[str] = mapped_column(Text, default="ringing")
+    handled_by: Mapped[str | None] = mapped_column(Text, nullable=True)  # voice_agent | agent
+    voice_agent_id: Mapped[int | None] = fk("voice_agents.id")
+    agent_id: Mapped[int | None] = fk("agents.id")
+    started_at: Mapped[datetime] = ts(default=utcnow)
+    answered_at: Mapped[datetime | None] = ts(nullable=True)
+    ended_at: Mapped[datetime | None] = ts(nullable=True)
+    duration_s: Mapped[int | None] = mapped_column(Integer, Computed(
+        "case when ended_at is not null and answered_at is not null "
+        "then greatest(0, extract(epoch from (ended_at - answered_at))::int) end", persisted=True), nullable=True)
+    end_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recording_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+    contact: Mapped[Contact] = relationship(lazy="joined")
+
+
+class CallEvent(Base):
+    """Particionada: PK (id, created_at)."""
+
+    __tablename__ = "call_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    call_id: Mapped[int] = mapped_column(BigInteger)
+    type: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+class CallTurn(Base):
+    __tablename__ = "call_turns"
+
+    id: Mapped[int] = pk()
+    call_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("calls.id", ondelete="CASCADE"))
+    speaker: Mapped[str] = mapped_column(Text)  # contact | voice_agent | agent
+    text: Mapped[str] = mapped_column(Text)
+    start_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    end_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+# =============================================================================
+# 14 · SaaS
+# =============================================================================
+class Plan(Base):
+    __tablename__ = "plans"
+
+    id: Mapped[int] = pk()
+    key: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    price_month_usd: Mapped[float] = mapped_column(Numeric(10, 2), default=0)
+    limits: Mapped[dict] = mapped_column(JSONB, default=dict)
+    features: Mapped[dict] = mapped_column(JSONB, default=dict)
+    provider_price_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_public: Mapped[bool] = mapped_column(Boolean, default=True)
+    position: Mapped[int] = mapped_column(Integer, default=100)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    plan_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("plans.id"))
+    provider: Mapped[str] = mapped_column(Text, default="stripe")
+    provider_customer_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_subscription_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text)
+    current_period_start: Mapped[datetime | None] = ts(nullable=True)
+    current_period_end: Mapped[datetime | None] = ts(nullable=True)
+    cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class BillingEvent(Base):
+    __tablename__ = "billing_events"
+
+    id: Mapped[int] = pk()
+    provider: Mapped[str] = mapped_column(Text)
+    provider_event_id: Mapped[str] = mapped_column(Text)
+    type: Mapped[str] = mapped_column(Text)
+    organization_id: Mapped[int | None] = fk("organizations.id")
+    payload: Mapped[dict] = mapped_column(JSONB)
+    processed_at: Mapped[datetime | None] = ts(nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class UsageCounter(Base):
+    __tablename__ = "usage_counters"
+
+    organization_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("organizations.id"), primary_key=True)
+    period: Mapped[date] = mapped_column(Date, primary_key=True)
+    metric: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[float] = mapped_column(Numeric, default=0)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class PlatformAdmin(Base):
+    __tablename__ = "platform_admins"
+
+    id: Mapped[int] = pk()
+    email: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(Text)
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    auth_user_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
     created_at: Mapped[datetime] = ts(default=utcnow)

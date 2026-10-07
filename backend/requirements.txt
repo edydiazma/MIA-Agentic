@@ -12,3 +12,6 @@ openai>=3.26,<4
 pypdf>=5.1
 openpyxl>=3.1
 jsonschema>=4.23
+# Voz: par WebRTC del agente de voz y modelo en tiempo real (se importan solo al atender llamadas)
+aiortc>=1.9
+websockets>=13

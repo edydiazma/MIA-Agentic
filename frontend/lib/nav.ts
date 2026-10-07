@@ -9,6 +9,7 @@ export const NAV: NavEntry[] = [
   { label: "Tablero", icon: "📊", href: "/tablero" },
   { label: "Clientes", icon: "👥", href: "/clientes" },
   { label: "Clientes Bloqueados", icon: "⛔", href: "/clientes-bloqueados" },
+  { label: "Negocios", icon: "💼", href: "/negocios" },
   { label: "Campañas", icon: "📣", href: "/campanas" },
   {
     label: "Automatizaciones",
@@ -36,8 +37,8 @@ export const NAV: NavEntry[] = [
       {
         label: "Llamadas",
         items: [
-          { label: "Agentes de voz", href: "/automatizaciones/agentes-voz", soon: true },
-          { label: "Historial de llamadas", href: "/automatizaciones/llamadas", soon: true },
+          { label: "Agentes de voz", href: "/automatizaciones/agentes-voz" },
+          { label: "Historial de llamadas", href: "/automatizaciones/llamadas" },
         ],
       },
       {
@@ -61,7 +62,7 @@ export const NAV: NavEntry[] = [
           { label: "Etapas de contactos", href: "/reportes/etapas" },
           { label: "IA y Cortex", href: "/reportes/ia" },
           { label: "Análisis de flujos", href: "/reportes/flujos", soon: true },
-          { label: "Llamadas asesores", href: "/reportes/llamadas", soon: true },
+          { label: "Llamadas", href: "/reportes/llamadas" },
         ],
       },
       {
@@ -70,8 +71,9 @@ export const NAV: NavEntry[] = [
           { label: "Resumen", href: "/reportes/inbound" },
           { label: "Bots", href: "/reportes/bots" },
           { label: "Click to WA Meta", href: "/reportes/click-to-wa-meta" },
-          { label: "Click to WA Google", href: "/reportes/click-to-wa-google", soon: true },
-          { label: "Tráfico web", href: "/reportes/trafico-web", soon: true },
+          { label: "Click to WA Google", href: "/reportes/click-to-wa-google" },
+          { label: "Tráfico web", href: "/reportes/trafico-web" },
+          { label: "Atribución y conversiones", href: "/reportes/atribucion" },
         ],
       },
       {
@@ -117,6 +119,10 @@ export const NAV: NavEntry[] = [
           { label: "Mi empresa", href: "/configuraciones/empresa" },
           { label: "Gestor de recursos", href: "/configuraciones/recursos" },
           { label: "Citas", href: "/configuraciones/citas" },
+          { label: "Integraciones (CRM y Ads)", href: "/configuraciones/integraciones" },
+          { label: "Atribución web", href: "/configuraciones/atribucion" },
+          { label: "Conversiones", href: "/configuraciones/conversiones" },
+          { label: "Plan y facturación", href: "/configuraciones/plan" },
         ],
       },
     ],

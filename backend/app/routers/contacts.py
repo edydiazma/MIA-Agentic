@@ -222,7 +222,7 @@ async def update_contact(
             raise HTTPException(422, "; ".join(errors))
     await session.commit()
     out = contact_out(await _reload(session, contact))
-    await hub.broadcast("contact.updated", out)
+    await hub.broadcast("contact.updated", out, contact.organization_id)
     return out
 
 

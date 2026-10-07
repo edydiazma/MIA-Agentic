@@ -32,6 +32,28 @@ function looksLikeDefinition(x: unknown): x is FlowDefinition {
   return !!d && typeof d === "object" && Array.isArray(d.scripts) && d.scripts.every((s) => s && s.trigger && Array.isArray(s.blocks));
 }
 
+/** Forma canónica para comparar definiciones: claves ordenadas, sin vacíos ni valores por defecto.
+ *  El paso Junior ⇄ Avanzado (Blockly) reordena claves y agrega ramas vacías sin cambiar el flujo. */
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      const v = canonical((value as Record<string, unknown>)[key]);
+      const empty = v === null || v === undefined || v === false || v === "" ||
+        (Array.isArray(v) && v.length === 0) || (typeof v === "object" && v !== null && !Array.isArray(v) && Object.keys(v).length === 0);
+      // "match": "contains" es el valor por defecto del disparador por palabra clave
+      const isDefault = key === "match" && v === "contains";
+      if (!empty && !isDefault && key !== "position") out[key] = v;
+    }
+    return out;
+  }
+  // Los campos de Blockly devuelven texto: "60" y 60 son el mismo valor
+  if (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value.trim())) return Number(value);
+  return value;
+}
+const canonicalKey = (d: unknown) => JSON.stringify(canonical(d));
+
 export default function FlowEditor({ flowId }: { flowId: number }) {
   const me = useMe();
   const isAdmin = me?.role === "admin";
@@ -40,6 +62,7 @@ export default function FlowEditor({ flowId }: { flowId: number }) {
   const [definition, setDefinition] = useState<FlowDefinition | null>(null);
   const [mode, setMode] = useState<EditorMode>("junior");
   const [dirty, setDirty] = useState(false);
+  const baseline = useRef<string>("");
   const [orphans, setOrphans] = useState(0);
   const [serverErrors, setServerErrors] = useState<FlowError[]>([]);
   const [savedVersionId, setSavedVersionId] = useState<number | null>(null);
@@ -57,7 +80,9 @@ export default function FlowEditor({ flowId }: { flowId: number }) {
     try {
       const d = await flowsApi.get(flowId);
       setFlow(d);
-      setDefinition(d.definition ?? emptyDefinition(d.trigger_type));
+      const initial = d.definition ?? emptyDefinition(d.trigger_type);
+      setDefinition(initial);
+      baseline.current = canonicalKey(initial);
       setMode(d.editor_mode);
       setDirty(false);
       setServerErrors([]);
@@ -87,7 +112,7 @@ export default function FlowEditor({ flowId }: { flowId: number }) {
 
   function update(next: FlowDefinition, nextOrphans?: number) {
     setDefinition(next);
-    setDirty(true);
+    setDirty(canonicalKey(next) !== baseline.current);
     setServerErrors([]);
     if (nextOrphans !== undefined) setOrphans(nextOrphans);
   }
@@ -120,6 +145,7 @@ export default function FlowEditor({ flowId }: { flowId: number }) {
       if (!r) return null;
       if (r.errors?.length) setServerErrors(r.errors);
       setDirty(false);
+      baseline.current = canonicalKey(definition);
       setSavedVersionId(r.id);
       setNotice(`Versión v${r.version} guardada`);
       setFlow((f) => (f ? { ...f, versions_count: (f.versions_count ?? 0) + 1 } : f));

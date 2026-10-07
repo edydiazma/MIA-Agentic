@@ -49,6 +49,9 @@ class WhatsAppClient:
 
     @property
     def _headers(self) -> dict[str, str]:
+        if not self.token:
+            raise WhatsAppError("Falta el token de WhatsApp de este número: conéctalo en Configuraciones → "
+                                "Plataforma («Conectar WhatsApp») o define WA_ACCESS_TOKEN en el servidor.")
         return {"Authorization": f"Bearer {self.token}"}
 
     async def _post_message(self, payload: dict) -> str:

@@ -12,6 +12,7 @@ from app.flows.engine import simulate
 from app.flows.validate import validate_definition
 from app.models import Agent, Flow, FlowRun, FlowRunStep, FlowVersion, utcnow
 from app.schemas import UTCDateTime
+from app.plans import enforce_limit, has_feature
 
 router = APIRouter(prefix="/api/flows", tags=["flows"])
 
@@ -122,6 +123,7 @@ async def list_flows(status: str | None = None, agent: Agent = Depends(current_a
 
 @router.post("")
 async def create_flow(body: FlowIn, agent: Agent = Depends(require_admin), session: AsyncSession = Depends(get_session)):
+    await enforce_limit(session, agent.organization_id, "flows")
     if body.trigger_type not in TRIGGERS:
         raise HTTPException(422, f"Disparador inválido: {', '.join(TRIGGERS)}")
     if body.editor_mode not in ("junior", "advanced"):
@@ -220,6 +222,8 @@ async def get_version(flow_id: int, version_id: int, agent: Agent = Depends(curr
 async def publish(flow_id: int, body: PublishIn | None = None, agent: Agent = Depends(require_admin),
                   session: AsyncSession = Depends(get_session)):
     flow = await _flow(session, flow_id, agent.organization_id)
+    if not await has_feature(session, agent.organization_id, "flows"):
+        raise HTTPException(402, "Tu plan no incluye «Flujos». Actualiza el plan para publicarlos.")
     version = await session.get(FlowVersion, body.version_id) if body and body.version_id else await _latest(session, flow.id)
     if not version or version.flow_id != flow.id:
         raise HTTPException(404, "Versión no encontrada")

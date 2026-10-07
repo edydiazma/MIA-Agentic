@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   AVAILABILITY_LABEL,
+  api,
   getAgent,
   getToken,
   send,
@@ -14,13 +15,27 @@ import {
 } from "@/lib/api";
 import { NAV, type NavEntry } from "@/lib/nav";
 import { RealtimeProvider, useRealtime, useRealtimeStatus } from "@/lib/realtime";
+import type { PlanStatus } from "@/lib/saas-types";
+import { OrgSwitcher } from "@/components/saas/OrgSwitcher";
+import { PlanBanner } from "@/components/saas/PlanBanner";
+import { IncomingCallManager } from "@/components/voice/IncomingCallManager";
 
 const MeContext = createContext<Agent | null>(null);
 /** Usuario que inició sesión (role, availability...). */
 export const useMe = () => useContext(MeContext);
 
-function isActive(path: string, href: string) {
+function matches(path: string, href: string) {
   return href === "/" ? path === "/" : path === href || path.startsWith(href + "/");
+}
+
+const ALL_HREFS = NAV.flatMap((e) => [e.href, ...(e.groups ?? []).flatMap((g) => g.items.map((i) => i.href))]).filter(
+  (h): h is string => !!h,
+);
+
+/** Activo solo si es la ruta más específica que coincide (p. ej. /cortex vs /cortex/conexiones). */
+function isActive(path: string, href: string) {
+  if (!matches(path, href)) return false;
+  return !ALL_HREFS.some((h) => h.length > href.length && h.startsWith(href) && matches(path, h));
 }
 
 function Section({ entry, path, isAdmin, onNavigate }: { entry: NavEntry; path: string; isAdmin: boolean; onNavigate: () => void }) {
@@ -77,7 +92,12 @@ function Shell({ me, setMe, children }: { me: Agent; setMe: (a: Agent) => void; 
   const connected = useRealtimeStatus();
   const [menuOpen, setMenuOpen] = useState(false);
   const [alerts, setAlerts] = useState(0);
+  const [plan, setPlan] = useState<PlanStatus | null>(null);
   const isAdmin = me.role === "admin";
+
+  useEffect(() => {
+    api<PlanStatus>("/api/plan").then(setPlan, () => setPlan(null));
+  }, []);
 
   useRealtime((event) => {
     if (event === "alert.new") setAlerts((n) => n + 1);
@@ -122,6 +142,7 @@ function Shell({ me, setMe, children }: { me: Agent; setMe: (a: Agent) => void; 
             </Link>
           )}
           <div className="topbar-right">
+            <OrgSwitcher />
             <select
               className={`availability ${me.availability}`}
               value={me.availability}
@@ -141,7 +162,9 @@ function Shell({ me, setMe, children }: { me: Agent; setMe: (a: Agent) => void; 
             <button onClick={logout}>Salir</button>
           </div>
         </header>
+        <PlanBanner plan={plan} />
         <main className="content">{children}</main>
+        <IncomingCallManager />
       </div>
     </div>
   );

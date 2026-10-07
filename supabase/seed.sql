@@ -13,3 +13,8 @@ insert into public.typifications (organization_id, name, is_success, position) v
   (1, 'Spam', false, 6),
   (1, 'Inactividad', false, 7)
 on conflict (organization_id, name) do nothing;
+
+-- Instalación propia: la empresa inicial queda en el plan Enterprise (en instalaciones nuevas el seed corre
+-- después de la migración 14, que solo asigna plan a las empresas que ya existían).
+update public.organizations set plan_id = (select id from public.plans where key = 'enterprise')
+where id = 1 and plan_id is null;

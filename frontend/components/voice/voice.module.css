@@ -1,0 +1,33 @@
+.dock { position: fixed; right: 20px; bottom: 20px; z-index: 60; display: grid; gap: 10px; width: min(360px, calc(100vw - 32px)); }
+.toast {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 14px 16px; display: grid; gap: 10px; border-left: 4px solid var(--ok);
+}
+.toast.bridge { border-left-color: var(--warn); }
+.head { display: flex; align-items: center; gap: 10px; }
+.pulse { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--ok-soft); font-size: 18px; animation: ring 1.2s ease-in-out infinite; flex-shrink: 0; }
+@keyframes ring { 0%, 100% { transform: rotate(0); } 20% { transform: rotate(-14deg); } 40% { transform: rotate(14deg); } 60% { transform: rotate(-8deg); } }
+@media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
+.who { display: grid; line-height: 1.25; min-width: 0; }
+.who strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.actions { display: flex; gap: 8px; }
+.actions button { flex: 1; }
+.answer { background: var(--ok); border-color: var(--ok); color: #fff; }
+.decline { color: var(--bad); }
+.bar {
+  background: var(--sidebar); color: #fff; border-radius: var(--radius); box-shadow: var(--shadow); padding: 10px 12px;
+  display: flex; align-items: center; gap: 10px;
+}
+.bar .who small { color: rgba(255, 255, 255, .7); }
+.timer { font-variant-numeric: tabular-nums; font-weight: 600; margin-left: auto; }
+.barBtn { background: rgba(255, 255, 255, .12); border-color: transparent; color: #fff; }
+.barBtn[aria-pressed="true"] { background: var(--warn); }
+.hang { background: var(--bad); border-color: var(--bad); color: #fff; }
+.notice { font-size: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; box-shadow: var(--shadow); }
+.turns { display: grid; gap: 8px; max-height: 360px; overflow-y: auto; }
+.turn { display: grid; gap: 2px; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); max-width: 85%; }
+.turn.contact { justify-self: start; }
+.turn.bot { justify-self: end; background: var(--info-soft); }
+.days { display: flex; gap: 4px; flex-wrap: wrap; }
+.day { padding: 4px 8px; border-radius: 999px; font-size: 12px; }
+.day[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }

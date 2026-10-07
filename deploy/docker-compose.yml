@@ -22,6 +22,7 @@ services:
         NEXT_PUBLIC_API_URL: https://${DOMAIN}
         NEXT_PUBLIC_SUPABASE_URL: ${SUPABASE_URL}
         NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY}
+        NEXT_PUBLIC_VOICE_STUN_URLS: ${VOICE_STUN_URLS:-stun:stun.l.google.com:19302}
     restart: unless-stopped
     expose: ["3000"]
     depends_on: [backend]

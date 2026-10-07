@@ -17,6 +17,10 @@ export const CONFIG_TABS = [
   { href: "/configuraciones/empresa", label: "Mi empresa" },
   { href: "/configuraciones/recursos", label: "Gestor de recursos" },
   { href: "/configuraciones/citas", label: "Citas" },
+  { href: "/configuraciones/integraciones", label: "Integraciones" },
+  { href: "/configuraciones/atribucion", label: "Atribución web" },
+  { href: "/configuraciones/conversiones", label: "Conversiones" },
+  { href: "/configuraciones/plan", label: "Plan y facturación" },
 ];
 
 export function ConfigTabs() {

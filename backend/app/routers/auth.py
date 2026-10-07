@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import create_token, current_agent, hash_password, require_admin, verify_password
 from app.db import get_session
-from app.models import Agent, AgentGroup, Conversation, Group
+from app.models import Agent, AgentGroup, Conversation, Group, Organization, utcnow
+from app.plans import enforce_limit
 from app.realtime import hub
 from app.schemas import AgentCreate, AgentOut, AgentUpdate, GroupOut, LoginIn, TokenOut
 
@@ -47,13 +48,67 @@ async def _set_groups(session: AsyncSession, org: int, agent_id: int, group_ids:
         session.add(AgentGroup(agent_id=agent_id, group_id=gid))
 
 
-@router.post("/auth/login", response_model=TokenOut)
-async def login(body: LoginIn, session: AsyncSession = Depends(get_session)):
-    agent = await session.scalar(select(Agent).where(func.lower(Agent.email) == body.email.lower().strip()))
-    if not agent or not agent.is_active or not agent.password_hash \
-            or not verify_password(body.password, agent.password_hash):
+class LoginBody(LoginIn):
+    organization_id: int | None = None  # requerido cuando el correo tiene acceso a varias empresas
+
+
+class SwitchOrgIn(BaseModel):
+    organization_id: int
+
+
+async def _org_summary(session: AsyncSession, org_ids: list[int]) -> list[dict]:
+    rows = (await session.execute(select(Organization.id, Organization.name, Organization.status)
+                                  .where(Organization.id.in_(org_ids)).order_by(Organization.name))).all()
+    return [{"id": i, "name": n, "status": st} for i, n, st in rows]
+
+
+def _token_out(agent: Agent, orgs: list[int], organization: Organization | None) -> dict:
+    return {**TokenOut(access_token=create_token(agent, orgs), agent=AgentOut.model_validate(agent)).model_dump(),
+            "organization": {"id": organization.id, "name": organization.name, "status": organization.status}
+            if organization else None}
+
+
+@router.post("/auth/login")
+async def login(body: LoginBody, session: AsyncSession = Depends(get_session)):
+    """Si el correo pertenece a varias empresas (con esa misma contraseña), pide elegir una."""
+    candidates = (await session.scalars(select(Agent).where(
+        func.lower(Agent.email) == body.email.lower().strip(), Agent.is_active).order_by(Agent.organization_id))).all()
+    matches = [a for a in candidates if verify_password(body.password, a.password_hash)]
+    if not matches:
         raise HTTPException(401, "Credenciales inválidas")
-    return TokenOut(access_token=create_token(agent), agent=AgentOut.model_validate(agent))
+    org_ids = [a.organization_id for a in matches]
+    if body.organization_id is not None:
+        chosen = next((a for a in matches if a.organization_id == body.organization_id), None)
+        if not chosen:
+            raise HTTPException(403, "No tienes acceso a esa empresa")
+    elif len(matches) > 1:
+        return {"choose_org": await _org_summary(session, org_ids)}
+    else:
+        chosen = matches[0]
+    chosen.last_seen_at = utcnow()
+    await session.commit()
+    return _token_out(chosen, org_ids, await session.get(Organization, chosen.organization_id))
+
+
+@router.get("/auth/orgs")
+async def my_orgs(request: Request, agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
+    """Empresas a las que puedes cambiar sin volver a iniciar sesión."""
+    ids = [int(i) for i in getattr(request.state, "token_orgs", [agent.organization_id])]
+    return {"current": agent.organization_id, "organizations": await _org_summary(session, ids)}
+
+
+@router.post("/auth/switch-org")
+async def switch_org(body: SwitchOrgIn, request: Request, agent: Agent = Depends(current_agent),
+                     session: AsyncSession = Depends(get_session)):
+    """Cambia de empresa: solo a las que este correo entró con su contraseña en el inicio de sesión."""
+    allowed = [int(i) for i in getattr(request.state, "token_orgs", [agent.organization_id])]
+    if body.organization_id not in allowed:
+        raise HTTPException(403, "No tienes acceso a esa empresa (vuelve a iniciar sesión)")
+    target = await session.scalar(select(Agent).where(
+        Agent.organization_id == body.organization_id, func.lower(Agent.email) == agent.email.lower(), Agent.is_active))
+    if not target:
+        raise HTTPException(403, "No tienes acceso a esa empresa")
+    return _token_out(target, allowed, await session.get(Organization, target.organization_id))
 
 
 @router.get("/auth/me", response_model=AgentOut)
@@ -70,7 +125,7 @@ async def set_my_availability(
         raise HTTPException(422, "Disponibilidad inválida")
     agent.availability = value
     await session.commit()
-    await hub.broadcast("agent.presence", {"agent_id": agent.id, "availability": value})
+    await hub.broadcast("agent.presence", {"agent_id": agent.id, "availability": value}, agent.organization_id)
     return agent
 
 
@@ -93,6 +148,7 @@ async def create_agent(
         raise HTTPException(422, "Rol inválido")
     if len(body.password) < 8:
         raise HTTPException(422, "La contraseña debe tener al menos 8 caracteres")
+    await enforce_limit(session, admin.organization_id, "users")
     agent = Agent(organization_id=admin.organization_id, email=email, name=body.name,
                   password_hash=hash_password(body.password), role=body.role)
     session.add(agent)

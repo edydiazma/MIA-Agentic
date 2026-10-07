@@ -123,6 +123,7 @@ end $$;
 
 -- RLS: un agente autenticado solo ve su organización
 insert into public.organizations (id, name, slug) values (2, 'Otra', 'otra');
+select setval(pg_get_serial_sequence('public.organizations', 'id'), (select max(id) from public.organizations));
 insert into public.contacts (organization_id, wa_id, name) values (2, '573009998877', 'Ajeno');
 grant usage on schema public to authenticated;
 grant select on all tables in schema public to authenticated;

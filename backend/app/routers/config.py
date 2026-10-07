@@ -18,6 +18,7 @@ from app.models import AIAgent, Agent, Alert, Channel, Integration, QuickReply, 
 from app.schemas import UTCDateTime
 from app.secrets_vault import put_secret
 from app.settings_store import DEFAULTS, get_setting, set_setting
+from app.plans import enforce_limit
 
 router = APIRouter(prefix="/api", tags=["config"])
 env = get_settings()
@@ -238,6 +239,7 @@ async def create_channel(body: ChannelIn, agent: Agent = Depends(require_admin),
     pnid = body.phone_number_id.strip()
     if await session.scalar(select(Channel.id).where(Channel.phone_number_id == pnid)):
         raise HTTPException(409, "Ese número ya está registrado")
+    await enforce_limit(session, org, "channels")
     bot_id = await _check_bot(session, org, body.bot_id) or await session.scalar(
         select(AIAgent.id).where(AIAgent.organization_id == org).order_by(AIAgent.id).limit(1))
     c = Channel(organization_id=org, name=body.name, phone_number_id=pnid, display_phone=body.display_phone,
