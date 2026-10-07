@@ -29,14 +29,26 @@ async def beat() -> None:
     from app.db import engine
 
     s = get_settings()
+    # Nodo de voz (ROLE=voice, o all con dirección interna): capacidad, carga actual y URL interna (§19.2)
+    voice = s.role == "voice" or (s.role == "all" and bool(s.voice_node_url))
+    capacity = s.voice_capacity if voice else None
+    endpoint = s.voice_node_url or None if voice else None
+    load = 0
+    if voice:
+        from app.voice.session import registry
+
+        load = len(registry.sessions)
     async with engine.begin() as conn:
         await conn.execute(text("""
-            insert into public.worker_heartbeats (worker_id, role, hostname, version, loops)
-            values (:w, :r, :h, :v, cast(:l as jsonb))
+            insert into public.worker_heartbeats (worker_id, role, hostname, version, loops, capacity, active_load,
+                                                  endpoint)
+            values (:w, :r, :h, :v, cast(:l as jsonb), :cap, :load, :ep)
             on conflict (worker_id) do update set role = excluded.role, version = excluded.version,
-              loops = excluded.loops, last_beat_at = now()"""),
-            {"w": WORKER_ID, "r": s.role, "h": socket.gethostname(), "v": s.app_version,
-             "l": json.dumps(_loops(), default=str)})
+              loops = excluded.loops, capacity = excluded.capacity, active_load = excluded.active_load,
+              endpoint = excluded.endpoint, last_beat_at = now()"""),
+            {"w": WORKER_ID, "r": "voice" if s.role == "voice" else s.role, "h": socket.gethostname(),
+             "v": s.app_version, "l": json.dumps(_loops(), default=str), "cap": capacity, "load": load,
+             "ep": endpoint})
     _last_beat["mono"] = time.monotonic()
 
 
@@ -78,12 +90,18 @@ async def readiness() -> tuple[bool, dict]:
         checks["database"] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
     if s.role in ("api", "all") and hub.mode == "pg":
         checks["realtime"] = {"ok": hub.listening, "mode": "pg"}
-    if s.role in ("worker", "all"):
+    if s.role in ("worker", "all", "voice"):
         age = beat_age()
         checks["heartbeat"] = {"ok": age is not None and age < STALE_AFTER,
                                "age_s": None if age is None else round(age, 1),
                                "leader_of": sorted(n for n, st in STATUS.items() if st.get("leader"))}
+    extra = {}
+    if s.role in ("voice", "all"):  # update.sh no reemplaza un nodo de voz con llamadas en curso
+        from app.voice.session import registry
+
+        extra["voice_sessions"] = len(registry.sessions)
     return all(c["ok"] for c in checks.values()), {"role": s.role, "version": s.app_version, "worker_id": WORKER_ID,
+                                                    **extra,
                                                     "checks": checks}
 
 

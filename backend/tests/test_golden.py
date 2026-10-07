@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import httpx
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app import classifier
 from app.ai.base import ImagePart
@@ -258,10 +258,10 @@ async def test_document_extraction_pipeline(client, monkeypatch, golden_cortex):
     assert doc_key["masked"] and doc_key["value"] != "79555123"
     assert masked["golden"]["birthdate"].startswith("****")
     async with SessionLocal() as s:
-        if not await s.get(Organization, 9301):
-            s.add(Organization(id=9301, name="Otra golden", slug="otra-golden"))
+        if not await s.get(Organization, 9353):
+            s.add(Organization(id=9353, name="Otra golden", slug="otra-golden"))
             await s.commit()
-    await _agent(9301, "admin.otra.golden@test.com", "admin")
+    await _agent(9353, "admin.otra.golden@test.com", "admin")
     other = await _login("admin.otra.golden@test.com", "clave12345")
     assert (await other.get(f"/api/contacts/{contact.id}/golden")).status_code == 404
     assert (await other.get("/api/golden/search", params={"q": "JKL482"})).json() == []
@@ -319,7 +319,19 @@ async def test_conversation_extraction_via_classifier(client, monkeypatch):
 
 
 # --- Plantilla automotriz: los alias de Atom terminan en un solo lugar -------------------------------------
-async def test_preset_apply_migrates_legacy_fields(client):
+@pytest.fixture
+async def restore_fields():
+    """La plantilla crea ~60 campos en la empresa 1 (compartida): al terminar se borran los que creó esta prueba
+    para no cambiar los campos que esperan otras (p. ej. «modelo_interes» como lista en test_classifier)."""
+    async with SessionLocal() as s:
+        before = set((await s.scalars(select(ContactField.id).where(ContactField.organization_id == 1))).all())
+    yield
+    async with SessionLocal() as s:
+        await s.execute(delete(ContactField).where(ContactField.organization_id == 1, ContactField.id.not_in(before)))
+        await s.commit()
+
+
+async def test_preset_apply_migrates_legacy_fields(client, restore_fields):
     c = client
     # Ficha heredada: la placa en tres campos, nombre completo suelto, habeas data y una variable del bot
     legacy = [("placa", "Placa", "text"), ("numero_placa", "Numero_placa", "text"),

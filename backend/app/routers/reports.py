@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import current_agent
 from app.permissions import require_permission
-from app.db import get_session
+from app.db import SessionLocal, get_reports_session, get_session
 from app.fields import custom_values, fields_by_key
 from app.models import (
     Agent,
@@ -71,9 +71,11 @@ async def _range(session: AsyncSession, org: int, start: date | None, end: date 
     hi = datetime(end.year, end.month, end.day, tzinfo=tz).astimezone(UTC) + timedelta(days=1)
     # Recalcular solo lo que puede haber cambiado: hoy y ayer
     fresh_from = max(start, today - timedelta(days=1))
-    if fresh_from <= end:
-        await session.execute(text("select reporting.refresh_range(:o, :a, :b)"), {"o": org, "a": fresh_from, "b": end})
-        await session.commit()
+    if fresh_from <= end:  # en la principal (la sesión de lectura puede ser una réplica)
+        async with SessionLocal() as primary:
+            await primary.execute(text("select reporting.refresh_range(:o, :a, :b)"),
+                                  {"o": org, "a": fresh_from, "b": end})
+            await primary.commit()
     return lo, hi, tz, start, end
 
 
@@ -276,7 +278,7 @@ async def realtime(agent: Agent = Depends(current_agent), session: AsyncSession 
 # --- Reporte general (rollups) --------------------------------------------------
 @router.get("/reports/general")
 async def general(start: date | None = None, end: date | None = None, agent: Agent = Depends(current_agent),
-                  session: AsyncSession = Depends(get_session)):
+                  session: AsyncSession = Depends(get_reports_session)):
     org = agent.organization_id
     lo, hi, tz, start, end = await _range(session, org, start, end)
     rows = {r["day"]: r for r in await _rows(session, """
@@ -348,7 +350,7 @@ async def general(start: date | None = None, end: date | None = None, agent: Age
 
 
 @router.get("/reports/stages")
-async def stages(agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
+async def stages(agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_reports_session)):
     rows = (await session.execute(select(Contact.stage, func.count()).where(
         Contact.organization_id == agent.organization_id, Contact.blocked.is_(False)).group_by(Contact.stage))).all()
     return dict(rows)
@@ -357,7 +359,7 @@ async def stages(agent: Agent = Depends(current_agent), session: AsyncSession = 
 # --- Inbound --------------------------------------------------------------------
 @router.get("/reports/inbound")
 async def inbound(start: date | None = None, end: date | None = None, agent: Agent = Depends(current_agent),
-                  session: AsyncSession = Depends(get_session)):
+                  session: AsyncSession = Depends(get_reports_session)):
     org = agent.organization_id
     lo, hi, tz, start, end = await _range(session, org, start, end)
     by_type = dict((await session.execute(
@@ -396,7 +398,7 @@ async def inbound(start: date | None = None, end: date | None = None, agent: Age
 
 @router.get("/reports/ctwa")
 async def click_to_whatsapp(start: date | None = None, end: date | None = None, agent: Agent = Depends(current_agent),
-                            session: AsyncSession = Depends(get_session)):
+                            session: AsyncSession = Depends(get_reports_session)):
     """Conversaciones originadas en anuncios Click to WhatsApp de Meta."""
     org = agent.organization_id
     lo, hi, _tz, _s, _e = await _range(session, org, start, end)
@@ -418,7 +420,7 @@ async def click_to_whatsapp(start: date | None = None, end: date | None = None, 
 # --- Outbound -------------------------------------------------------------------
 @router.get("/reports/outbound")
 async def outbound(start: date | None = None, end: date | None = None, agent: Agent = Depends(current_agent),
-                   session: AsyncSession = Depends(get_session)):
+                   session: AsyncSession = Depends(get_reports_session)):
     org = agent.organization_id
     lo, hi, _tz, _s, _e = await _range(session, org, start, end)
     base = (Message.organization_id == org, Message.direction == "out", Message.sender_type != "system",
@@ -451,7 +453,7 @@ async def outbound(start: date | None = None, end: date | None = None, agent: Ag
 # --- Asesores (nivel de servicio) -----------------------------------------------
 @router.get("/reports/agents")
 async def agents_report(start: date | None = None, end: date | None = None, agent: Agent = Depends(current_agent),
-                        session: AsyncSession = Depends(get_session)):
+                        session: AsyncSession = Depends(get_reports_session)):
     org = agent.organization_id
     lo, hi, _tz, start, end = await _range(session, org, start, end)
     sla = (await get_setting(session, "conversations", org))["sla_minutes"]
@@ -491,7 +493,7 @@ async def agents_report(start: date | None = None, end: date | None = None, agen
 # --- Facturación ----------------------------------------------------------------
 @router.get("/reports/billing")
 async def billing(start: date | None = None, end: date | None = None, agent: Agent = Depends(current_agent),
-                  session: AsyncSession = Depends(get_session)):
+                  session: AsyncSession = Depends(get_reports_session)):
     """Mensajes cobrables según la información de precios que Meta envía en los webhooks de estado."""
     org = agent.organization_id
     _lo, _hi, _tz, start, end = await _range(session, org, start, end)
@@ -516,7 +518,7 @@ async def billing(start: date | None = None, end: date | None = None, agent: Age
 # --- IA (salud de los Cortex) ---------------------------------------------------
 @router.get("/reports/ai")
 async def ai_report(start: date | None = None, end: date | None = None, agent: Agent = Depends(current_agent),
-                    session: AsyncSession = Depends(get_session)):
+                    session: AsyncSession = Depends(get_reports_session)):
     """Llamadas a LLMs: volumen, errores, failover, latencias, tokens y costo por conexión y propósito."""
     org = agent.organization_id
     _lo, _hi, _tz, start, end = await _range(session, org, start, end)
@@ -604,7 +606,7 @@ def _flow_totals(rows: list[dict]) -> dict:
 
 @router.get("/reports/flows")
 async def flows_report(start: date | None = None, end: date | None = None, agent: Agent = Depends(current_agent),
-                       session: AsyncSession = Depends(get_session)):
+                       session: AsyncSession = Depends(get_reports_session)):
     """Resumen por flujo: ejecuciones, finalización, fallos y duración (reporting.daily_flows)."""
     org = agent.organization_id
     _lo, _hi, _tz, start, end = await _range(session, org, start, end)
@@ -629,7 +631,7 @@ async def flows_report(start: date | None = None, end: date | None = None, agent
 
 @router.get("/reports/flows/{flow_id}")
 async def flow_funnel(flow_id: int, start: date | None = None, end: date | None = None,
-                      agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
+                      agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_reports_session)):
     """Embudo de un flujo: por bloque, cuántas ejecuciones llegan, abandonan, fallan o esperan, y las opciones
     elegidas. El orden es el de la versión vigente; los bloques que ya no existen van al final."""
     org = agent.organization_id
@@ -708,7 +710,7 @@ def _service_kpis(t: Counter) -> dict:
 @router.get("/reports/service")
 async def service_report(start: date | None = None, end: date | None = None, group_id: int | None = None,
                          agent_id: int | None = None, agent: Agent = Depends(current_agent),
-                         session: AsyncSession = Depends(get_session)):
+                         session: AsyncSession = Depends(get_reports_session)):
     """AHT, ASA, tasa de atención y de abandono, contención del bot, clientes únicos vs casos (daily_service)."""
     org = agent.organization_id
     lo, hi, _tz, start, end = await _range(session, org, start, end)
@@ -765,7 +767,7 @@ async def service_report(start: date | None = None, end: date | None = None, gro
 
 @router.get("/reports/login")
 async def login_report(start: date | None = None, end: date | None = None, agent_id: int | None = None,
-                       agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
+                       agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_reports_session)):
     """Tiempo por estado de cada asesor (daily_agent_status), tiempo laborado y primer ingreso / última salida."""
     org = agent.organization_id
     lo, hi, tz, start, end = await _range(session, org, start, end)
@@ -820,7 +822,7 @@ class _ConvRef:
 
 @router.get("/reports/links")
 async def links_report(start: date | None = None, end: date | None = None, agent: Agent = Depends(current_agent),
-                       session: AsyncSession = Depends(get_session)):
+                       session: AsyncSession = Depends(get_reports_session)):
     """Enlaces enviados por clientes, asesores y bot (Atom: reporte "Links")."""
     org = agent.organization_id
     lo, hi, _tz, start, end = await _range(session, org, start, end)
@@ -855,7 +857,7 @@ async def links_report(start: date | None = None, end: date | None = None, agent
 @router.get("/reports/conversations.csv")
 async def export_conversations(start: date | None = None, end: date | None = None,
                                agent: Agent = Depends(require_permission("exports.conversations")),
-                               session: AsyncSession = Depends(get_session)):
+                               session: AsyncSession = Depends(get_reports_session)):
     org = agent.organization_id
     lo, hi, tz, _s, _e = await _range(session, org, start, end)
     c_stmt = select(Conversation).where(

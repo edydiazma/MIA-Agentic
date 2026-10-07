@@ -93,17 +93,32 @@ Stripe: create one *Price* per plan and save its id in the back-office (`/plataf
 
 ### Voice (AI voice agents)
 
-- Calls **answered by an advisor from the browser**: the audio goes directly browser ↔ Meta (WebRTC); the server only relays signaling. No extra ports needed.
-- Calls **answered by the AI voice agent**: the API replica that receives the call webhook creates the WebRTC
-  session (aiortc) **in its own memory** and connects it to the realtime model. Consequences:
-  - The media session is not shared between replicas: a later `terminate` webhook can land on another replica.
-    **While AI voice agents are enabled, run `BACKEND_REPLICAS=1`** (the worker can still be separate). Making
-    voice sessions cluster-aware (routing call events to the replica that owns the session) is pending.
-  - It needs **UDP** between Meta and the instance: Security Group inbound UDP on the ephemeral range
-    (e.g. `32768-60999`) or, better, a TURN server (coturn) via `VOICE_STUN_URLS`; and Docker NAT breaks ICE, so the
-    backend service needs `network_mode: host` (then remove `expose` and point Caddy to `host.docker.internal:8000`)
-    or the voice agent must run outside Docker.
-  - Unverified on EC2 so far (it was tested locally over loopback): validate a real call before enabling it for customers.
+- Calls **answered by an advisor from the browser** (incoming, and **advisor-initiated calls** from the
+  conversation's 📞 button once the customer granted call permission): audio goes browser ↔ Meta (WebRTC); the
+  server only relays signaling. No extra ports.
+- Calls **answered by the AI voice agent** run on a **voice node** (`ROLE=voice`), separate from the API (§19.2):
+  1. `.env`: `VOICE_DISPATCH=remote`, `VOICE_INTERNAL_TOKEN=$(openssl rand -hex 32)`, optionally `VOICE_CAPACITY`.
+  2. `docker compose --profile voice up -d` starts the `voice` service with **host networking** (WebRTC UDP). Only
+     this service needs it: the API replicas stay behind Caddy and can scale freely (`BACKEND_REPLICAS` > 1 is fine
+     with voice on). The API reaches the node at `VOICE_NODE_URL` (default `http://host.docker.internal:8000`)
+     with the shared token; `/internal/*` is never published by Caddy and port 8000 must stay closed in the
+     Security Group.
+  3. Security Group: inbound UDP on the ephemeral range (e.g. `32768-60999`) to the instance, or a TURN server
+     (coturn) via `VOICE_STUN_URLS`.
+  - Several voice nodes (e.g. one per EC2) register themselves in `worker_heartbeats` with capacity and load; each
+    call is pinned to one node (`calls.media_node_id`). If a node dies mid-call the call is marked failed and an
+    alert is raised (audio cannot move between nodes). With no healthy node, calls ring the advisors instead.
+  - `update.sh` does not replace a voice node with active calls (`FORCE_VOICE=1` to force).
+  - Unverified on EC2 so far (tested with a simulated node): validate a real call before enabling it for customers.
+
+### Panel realtime on Supabase (optional)
+
+`REALTIME_TRANSPORT=supabase` (or `both` during the switch) + `SUPABASE_JWT_SECRET` (legacy HS256 JWT secret):
+the panel subscribes to the private Realtime channels `org:{id}:events` / `org:{id}:agent:{id}` with a short-lived
+token from `GET /api/realtime/token`, and the backend publishes each event once through Supabase's broadcast API
+(needs `SUPABASE_SECRET_KEY`). The API then holds no WebSockets for the panel; presence comes from the panel's
+heartbeat. If the token or channel fails, the panel falls back to `/ws` automatically. Projects with only
+asymmetric JWT keys cannot use the backend-minted token: keep `ws` or sign agents in with Supabase Auth.
 
 ## 5. Updates
 
@@ -138,7 +153,22 @@ new replicas don't become healthy, they are removed and the old ones keep servin
 | Errors | Optional `SENTRY_DSN` |
 | Backups | Supabase (daily backups / PITR depending on the plan). The EC2 holds no data: it can be recreated from git + `.env` |
 | Secrets | `.env` on the instance (permissions 600). Provider keys and channel tokens added from the panel go to Supabase Vault |
-| Scaling | `BACKEND_REPLICAS` (or `docker compose up -d --scale backend=3`). A second worker (`--scale worker=2`) is a hot standby. Beyond one instance: same images on several EC2s (or ECS) behind an ALB — nothing in the backend is tied to one host except AI voice sessions (see Voice) |
+| Scaling | `BACKEND_REPLICAS` (or `docker compose up -d --scale backend=3`). Workers: scheduled tasks run once per cluster (advisory locks) and queued jobs (`jobs` table: document reading, CRM sync, conversion uploads, ad enrichment) are consumed by **every** worker in parallel, so `--scale worker=2` adds capacity. Voice nodes scale separately (`--profile voice`, one per host). Reports can read from a replica (`DATABASE_URL_REPORTS`). Beyond one instance: same images on several EC2s (or ECS) behind an ALB |
+| Jobs | Admin API `GET /api/ops/jobs` (per queue: queued/running/succeeded/failed/dead, oldest ready age, recent failures), `POST /api/ops/jobs/{id}/retry`/`cancel`. Metrics `wa_jobs_total`, `wa_jobs_queue_depth`, `wa_jobs_oldest_ready_seconds`, `wa_jobs_dead`, `wa_job_duration_seconds`. A job that exhausts its attempts becomes `dead` and raises an alert |
 | Monitoring | CloudWatch Agent (CPU/memory/disk + JSON logs) and an external check on `https://$DOMAIN/health/ready` (Route 53 health checks or UptimeRobot) |
 | Metrics | `/metrics` (Prometheus text) on each container, **not published by Caddy**: scrape `backend:8000/metrics` and `worker:8000/metrics` from inside the Docker network (Prometheus/Grafana Agent, or the CloudWatch agent's Prometheus support). Set `METRICS_TOKEN` to require `Authorization: Bearer`. Main series: `wa_http_requests_total`, `wa_http_request_duration_seconds`, `wa_ws_connections`, `wa_realtime_*`, `wa_rate_limited_total`, `wa_loop_leader`, `wa_loop_restarts_total`, `wa_heartbeat_age_seconds` |
 | Rate limits | Public tracking endpoints (`/t/*`) are limited per IP, shared across replicas (429 + `Retry-After`) |
+
+## Preflight: integration diagnostics before and after each deploy
+
+Read-only checks against every real integration (Meta, Google Ads, HubSpot/Salesforce, Stripe, SMTP/IMAP,
+Supabase Storage/Vault/Realtime/pooler, SSO, VAPID, voice, AI keys). Nothing is sent or charged; secrets are masked.
+
+```bash
+docker compose exec backend python -m app.preflight                 # all areas, platform + companies
+docker compose exec backend python -m app.preflight --areas meta,stripe --json
+docker compose exec backend python -m app.preflight --trigger deploy  # exit 0 ok · 1 warnings · 2 failures
+```
+
+Use the exit code as a deploy gate. The same results appear in the panel (Configuraciones → Diagnóstico) and in the
+back-office (`/plataforma/diagnostico`).

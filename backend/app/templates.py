@@ -46,7 +46,8 @@ def _row_to_raw(r: WaTemplate) -> dict:
 
 async def list_templates(session: AsyncSession, channel: Channel, refresh: bool = False) -> list[dict]:
     """Plantillas de la WABA del canal. Se sincronizan desde Meta cada 5 min (o al pedir refresh)."""
-    waba = channel.waba_id or settings.wa_waba_id
+    # La WABA del servidor solo aplica a la empresa de la instalación (ver routers/config.server_waba)
+    waba = channel.waba_id or (settings.wa_waba_id if channel.organization_id == settings.organization_id else None)
     if not waba:
         return []
     org = channel.organization_id

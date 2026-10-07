@@ -4,6 +4,7 @@ import { useState } from "react";
 import { CHANNEL_ICONS, CHANNEL_LABELS, api, send, type Bot, type Channel, type ChannelProvider } from "@/lib/api";
 import { Badge, Card, Empty, ErrorBox, Field, Modal, Toggle, useAction } from "@/components/ui";
 import { copy } from "@/components/config/common";
+import EmailChannelModal from "./EmailChannelModal";
 
 type MetaDraft = {
   id?: number;
@@ -21,6 +22,15 @@ type WebchatSettings = {
   position: "left" | "right";
   allowed_domains: string[];
   prechat: { enabled: boolean; require_email: boolean };
+  // Opciones avanzadas (§19.1)
+  open_selector: string | null;
+  auto_open_s: number | null;
+  initial_message: string | null;
+  clear_on_open: boolean;
+  avatar_url: string | null;
+  theme: "light" | "dark" | "auto";
+  launcher_text: string | null;
+  header_text_color: string;
 };
 type WebDraft = { id?: number; name: string; bot_id: number | null; settings: WebchatSettings; domains: string };
 
@@ -31,6 +41,14 @@ const WEB_DEFAULTS: WebchatSettings = {
   position: "right",
   allowed_domains: [],
   prechat: { enabled: false, require_email: false },
+  open_selector: null,
+  auto_open_s: null,
+  initial_message: null,
+  clear_on_open: false,
+  avatar_url: null,
+  theme: "light",
+  launcher_text: null,
+  header_text_color: "#ffffff",
 };
 
 /** Messenger, Instagram y chat web: conexión, estado y código del widget. */
@@ -50,6 +68,7 @@ export default function OmnichannelCard({
   const [meta, setMeta] = useState<MetaDraft | null>(null);
   const [web, setWeb] = useState<WebDraft | null>(null);
   const [embed, setEmbed] = useState<string | null>(null);
+  const [mail, setMail] = useState<{ id?: number } | null>(null);
   const [run, busy, error, setError] = useAction();
 
   async function saveMeta() {
@@ -98,7 +117,7 @@ export default function OmnichannelCard({
 
   return (
     <Card
-      title="Messenger, Instagram y chat web"
+      title="Correo, Messenger, Instagram y chat web"
       actions={
         isAdmin && (
           <div className="inline">
@@ -118,11 +137,19 @@ export default function OmnichannelCard({
             >
               + Chat web
             </button>
+            <button
+              onClick={() => {
+                setError(null);
+                setMail({});
+              }}
+            >
+              + Correo
+            </button>
           </div>
         )
       }
     >
-      <ErrorBox error={!meta && !web ? error : null} />
+      <ErrorBox error={!meta && !web && !mail ? error : null} />
       {channels.length === 0 ? (
         <Empty>
           Conecta tu página de Facebook (Messenger), tu cuenta profesional de Instagram o agrega el chat a tu sitio web.
@@ -150,7 +177,7 @@ export default function OmnichannelCard({
                       <div className="muted small">{CHANNEL_LABELS[provider]}</div>
                     </td>
                     <td className="small">
-                      {provider === "webchat" ? "Widget" : `Página ${c.page_id ?? ""}`}
+                      {provider === "webchat" ? "Widget" : provider === "email" ? c.external_id : `Página ${c.page_id ?? ""}`}
                       {provider === "instagram" && <div className="muted">IG {c.external_id}</div>}
                     </td>
                     <td className="small">{botName(c.bot_id)}</td>
@@ -176,7 +203,9 @@ export default function OmnichannelCard({
                             className="link small"
                             onClick={() => {
                               setError(null);
-                              if (provider === "webchat") {
+                              if (provider === "email") {
+                                setMail({ id: c.id });
+                              } else if (provider === "webchat") {
                                 const s = { ...WEB_DEFAULTS, ...(c.settings as Partial<WebchatSettings>) };
                                 setWeb({ id: c.id, name: c.name, bot_id: c.bot_id, settings: s, domains: s.allowed_domains.join(", ") });
                               } else {
@@ -372,7 +401,84 @@ export default function OmnichannelCard({
               />
             )}
           </div>
+          <details style={{ marginTop: 12 }}>
+            <summary className="strong">Opciones avanzadas</summary>
+            <div className="grid2" style={{ marginTop: 8 }}>
+              <Field label="Texto del botón" hint="Vacío = solo el ícono">
+                <input
+                  value={web.settings.launcher_text ?? ""}
+                  maxLength={40}
+                  placeholder="¿Te ayudamos?"
+                  onChange={(e) => setWeb({ ...web, settings: { ...web.settings, launcher_text: e.target.value || null } })}
+                />
+              </Field>
+              <Field label="Tema">
+                <select
+                  value={web.settings.theme}
+                  onChange={(e) => setWeb({ ...web, settings: { ...web.settings, theme: e.target.value as WebchatSettings["theme"] } })}
+                >
+                  <option value="light">Claro</option>
+                  <option value="dark">Oscuro</option>
+                  <option value="auto">Según el sistema del visitante</option>
+                </select>
+              </Field>
+              <Field label="Avatar (URL https)">
+                <input
+                  value={web.settings.avatar_url ?? ""}
+                  placeholder="https://tusitio.com/logo.png"
+                  onChange={(e) => setWeb({ ...web, settings: { ...web.settings, avatar_url: e.target.value || null } })}
+                />
+              </Field>
+              <Field label="Color del texto del encabezado">
+                <input
+                  type="color"
+                  value={web.settings.header_text_color}
+                  onChange={(e) => setWeb({ ...web, settings: { ...web.settings, header_text_color: e.target.value } })}
+                />
+              </Field>
+              <Field label="Abrir desde botones del sitio" hint="Selector CSS, ej. .abrir-chat o #contacto">
+                <input
+                  value={web.settings.open_selector ?? ""}
+                  placeholder=".abrir-chat"
+                  onChange={(e) => setWeb({ ...web, settings: { ...web.settings, open_selector: e.target.value || null } })}
+                />
+              </Field>
+              <Field label="Abrir solo después de (segundos)" hint="Una vez por visita. Vacío = no abrir solo.">
+                <input
+                  type="number"
+                  min={0}
+                  max={600}
+                  value={web.settings.auto_open_s ?? ""}
+                  onChange={(e) =>
+                    setWeb({ ...web, settings: { ...web.settings, auto_open_s: e.target.value ? Number(e.target.value) : null } })
+                  }
+                />
+              </Field>
+            </div>
+            <Field label="Mensaje inicial al bot" hint="Se envía al abrir el chat por primera vez para que el bot salude con contexto.">
+              <input
+                value={web.settings.initial_message ?? ""}
+                maxLength={500}
+                placeholder="Hola, vengo desde la página de vehículos nuevos"
+                onChange={(e) => setWeb({ ...web, settings: { ...web.settings, initial_message: e.target.value || null } })}
+              />
+            </Field>
+            <Toggle
+              checked={web.settings.clear_on_open}
+              onChange={(v) => setWeb({ ...web, settings: { ...web.settings, clear_on_open: v } })}
+              label="Limpiar el chat al abrir (solo muestra los mensajes nuevos)"
+            />
+          </details>
         </Modal>
+      )}
+
+      {mail && (
+        <EmailChannelModal
+          channelId={mail.id}
+          bots={bots}
+          onClose={() => setMail(null)}
+          onSaved={onChange}
+        />
       )}
 
       {embed && (

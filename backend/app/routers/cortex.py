@@ -23,7 +23,7 @@ from app.settings_store import add_revision
 
 router = APIRouter(prefix="/api/ai", tags=["cortex"])
 
-PURPOSES = ("chat", "classification", "learning", "flow", "json_edit", "qa", "agent_test", "onboarding", "golden", "any")
+PURPOSES = ("chat", "classification", "learning", "flow", "json_edit", "qa", "agent_test", "onboarding", "golden", "copilot", "assistant", "any")
 STRATEGIES = ("failover", "lowest_latency", "weighted")
 TEST_SCHEMA = {
     "type": "object",

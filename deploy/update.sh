@@ -38,6 +38,19 @@ echo "→ worker"
 docker compose up -d --no-deps worker
 wait_healthy $(docker compose ps -q worker)
 
+# Nodo de voz (si está en uso): reemplazarlo corta las llamadas que estén atendiendo los agentes de voz IA.
+# Por eso solo se actualiza si no hay sesiones activas o con FORCE_VOICE=1.
+if [ -n "$(docker compose --profile voice ps -q voice 2>/dev/null)" ]; then
+  load=$(docker compose --profile voice exec -T voice python -c "import json,urllib.request;print(json.load(urllib.request.urlopen('http://127.0.0.1:8000/health/ready')).get('voice_sessions', 0))" 2>/dev/null || echo 0)
+  if [ "${load:-0}" = "0" ] || [ -n "${FORCE_VOICE:-}" ]; then
+    echo "→ voz"
+    docker compose --profile voice up -d --no-deps voice
+    wait_healthy $(docker compose --profile voice ps -q voice)
+  else
+    echo "⚠ El nodo de voz tiene $load llamadas activas: no se actualizó (FORCE_VOICE=1 para forzar)" >&2
+  fi
+fi
+
 echo "→ API: $REPLICAS réplicas nuevas junto a las actuales"
 OLD=$(docker compose ps -q backend)
 docker compose up -d --no-deps --no-recreate --scale backend=$((REPLICAS + $(echo "$OLD" | grep -c . || true))) backend

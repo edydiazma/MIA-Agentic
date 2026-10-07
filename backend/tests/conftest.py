@@ -16,6 +16,7 @@ os.environ.update(
     WA_WABA_ID="WABA",
     WA_APP_SECRET="",
     DEBOUNCE_SECONDS="0.05",
+    BOT_MERGE_WINDOW_S="0.05",
     ADMIN_EMAIL="admin@test.com",
     ADMIN_PASSWORD="secret",
     JWT_SECRET="x" * 40,
@@ -86,7 +87,38 @@ class FakeChat:
         return AgentResult(text="¡Hola! ¿En qué te ayudo?")
 
 
+class FakeCopilot:
+    """Copiloto simulado por defecto (ninguna prueba llama a un modelo real). tests/test_copilot.py lo reemplaza."""
+
+    calls: list = []
+
+    @staticmethod
+    async def call_json(org, feature, system, user, schema, conversation_id=None, max_tokens=1500):
+        FakeCopilot.calls.append((feature, user))
+        props = schema.get("properties", {})
+        if "suggestions" in props:
+            return {"suggestions": [{"text": "¡Hola! Con gusto te ayudo."}],
+                    "next_action": {"action": "none", "label": "", "reason": "", "confidence": 0,
+                                    "payload": {k: None for k in props["next_action"]["properties"]["payload"]["required"]}}}, None, 5
+        if "need" in props:
+            return {"need": "—", "captured_data": [], "bot_promises": [], "sentiment": "neutral", "next_step": "—"}, None, 5
+        if "summary" in props:
+            return {"summary": "Resumen", "outcome": "—"}, None, 5
+        return {"text": "Texto"}, None, 5
+
+
 counter = itertools.count()  # IDs de WhatsApp únicos en toda la sesión de pruebas
+_phones = itertools.count(1)
+
+
+def unique_phone(prefix: str = "5739") -> str:
+    """Teléfono que ninguna otra prueba de la sesión usa (las pruebas comparten la empresa 1)."""
+    return f"{prefix}{next(_phones):08d}"
+
+
+def unique_name(base: str) -> str:
+    """Nombre único en la sesión (evita que «Luis» de una prueba coincida con el de otra)."""
+    return f"{base} {next(_phones)}"
 
 
 @pytest.fixture(autouse=True)
@@ -119,6 +151,24 @@ def fakes(monkeypatch):
     monkeypatch.setattr(WhatsAppClient, "download_media", download_media)
     monkeypatch.setattr(WhatsAppClient, "mark_read", noop)
     monkeypatch.setattr(ai_router, "run_chat", FakeChat.run_chat)
+    from app.copilot import hooks as copilot_hooks, llm as copilot_llm
+
+    copilot_hooks.DELAY_OVERRIDE = 0
+    monkeypatch.setattr(copilot_llm, "call_json", FakeCopilot.call_json)
+
+
+@pytest.fixture(autouse=True)
+async def _reset_login_limits():
+    """Los intentos fallidos de inicio de sesión cuentan por IP (15 min) y todas las pruebas comparten la IP del
+    cliente de pruebas: sin esto, las pruebas que verifican un 401 terminan bloqueando el login de las siguientes."""
+    from sqlalchemy import text as sql
+
+    from app.db import SessionLocal
+
+    async with SessionLocal() as s:
+        await s.execute(sql("delete from public.rate_limit_counters where bucket like 'login_fail:%'"))
+        await s.commit()
+    yield
 
 
 @pytest.fixture
@@ -148,6 +198,20 @@ def text(wa_id: str, msg_id: str, body: str, **kw) -> dict:
 
 async def settle(seconds: float = 0.4):
     await asyncio.sleep(seconds)
+
+
+async def eventually(fetch, check, timeout: float = 5.0, interval: float = 0.1):
+    """Espera a que `check(await fetch())` sea verdadero (trabajo en segundo plano); devuelve el último valor si
+    se cumple, None si se agota el tiempo. Evita esperas fijas que fallan cuando la máquina está cargada."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        value = await fetch()
+        if check(value):
+            return value if value else True
+        if loop.time() >= deadline:
+            return None
+        await asyncio.sleep(interval)
 
 
 def pytest_sessionfinish(session, exitstatus):

@@ -29,7 +29,7 @@ from app.models import (
     utcnow,
 )
 from app.quality import agent_tests, hooks, reviews
-from tests.conftest import WA, settle
+from tests.conftest import WA, eventually, settle
 
 FAKE: dict = {"scores": {}, "sentiment": "mixed", "judge": 90, "calls": 0, "na": set()}
 
@@ -97,6 +97,10 @@ async def _conversation(advisor_id: int, bot: bool = False) -> int:
                           text=txt, status="received" if d == "in" else "sent", created_at=t0 + timedelta(minutes=i)))
         await s.commit()
         return conv.id
+
+
+async def _reviews(c, conv_id: int) -> dict:
+    return (await c.get(f"/api/quality/conversations/{conv_id}")).json()
 
 
 async def _close(conv_id: int) -> None:
@@ -267,11 +271,13 @@ async def test_agent_tests_sandbox_checks_and_run_on_change(client, monkeypatch)
 
 async def test_plan_gate_and_org_isolation(client):
     c = client
+    await c.get("/api/quality/scorecards")  # crea las rúbricas por defecto (no depende de otra prueba)
     advisor = await _advisor(1, "luisqa@test.com")
     conv_id = await _conversation(advisor.id)
     await _close(conv_id)
-    await settle(0.6)
-    review_id = (await c.get(f"/api/quality/conversations/{conv_id}")).json()["reviews"][0]["id"]
+    data = await eventually(lambda: _reviews(c, conv_id), lambda d: bool(d.get("reviews")))
+    assert data, "la revisión automática no se creó"
+    review_id = data["reviews"][0]["id"]
 
     async def org_with(org_id: int, plan_key: str, email: str) -> None:
         # id fijo (como test_ops/test_reports): no consume la secuencia que usan los registros de test_saas

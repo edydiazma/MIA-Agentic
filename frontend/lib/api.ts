@@ -17,6 +17,9 @@ export type Contact = {
   id: number;
   /** null: contacto sin WhatsApp (Instagram, Messenger, chat web). */
   wa_id: string | null;
+  /** @usuario de WhatsApp y BSUID (clientes que ocultan su número). */
+  wa_username?: string | null;
+  wa_bsuid?: string | null;
   avatar_url?: string | null;
   name: string | null;
   email: string | null;
@@ -30,18 +33,20 @@ export type Contact = {
   marketing_opt_out: boolean;
   created_at: string | null;
 };
-export type ChannelProvider = "whatsapp_cloud" | "messenger" | "instagram" | "webchat";
+export type ChannelProvider = "whatsapp_cloud" | "messenger" | "instagram" | "webchat" | "email";
 export const CHANNEL_LABELS: Record<ChannelProvider, string> = {
   whatsapp_cloud: "WhatsApp",
   messenger: "Messenger",
   instagram: "Instagram",
   webchat: "Chat web",
+  email: "Correo",
 };
 export const CHANNEL_ICONS: Record<ChannelProvider, string> = {
   whatsapp_cloud: "🟢",
   messenger: "💬",
   instagram: "📸",
   webchat: "🌐",
+  email: "✉️",
 };
 export type ContactIdentity = {
   id: number;

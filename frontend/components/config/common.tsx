@@ -7,6 +7,7 @@ import { ErrorBox, LinkTabs, useAction, useApi } from "@/components/ui";
 
 export const CONFIG_TABS = [
   { href: "/configuraciones/plataforma", label: "Plataforma" },
+  { href: "/configuraciones/diagnostico", label: "Diagnóstico" },
   { href: "/configuraciones/mensajeria", label: "Mensajería" },
   { href: "/configuraciones/conversaciones", label: "Conversaciones" },
   { href: "/configuraciones/magia", label: "Magia de IA" },

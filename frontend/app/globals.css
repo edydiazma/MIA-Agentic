@@ -500,3 +500,42 @@ a.button.primary { background: var(--accent); color: var(--accent-text); border-
 .qr-pick { display: grid; gap: 2px; }
 .qr-pick .qr-cat { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .02em; }
 .composer.note textarea { background: #fffbeb; }
+
+/* Copiloto (§19.3) */
+.copilot { display: grid; gap: 6px; padding: 8px 16px; border-top: 1px solid var(--border); background: var(--panel); }
+.copilot-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.copilot-row input { flex: 1; min-width: 200px; }
+.copilot-chip { border: 1px solid var(--border); background: var(--accent-soft); border-radius: 999px; padding: 4px 12px;
+  font-size: 13px; max-width: 100%; text-align: left; white-space: normal; line-height: 1.35; }
+.copilot-chip:hover { border-color: var(--accent); }
+.copilot-chip.action { background: var(--panel-2); font-weight: 600; }
+.copilot-n { display: inline-block; min-width: 16px; font-size: 11px; color: var(--muted); }
+.copilot-tools { margin-left: auto; display: inline-flex; gap: 10px; align-items: center; position: relative; }
+.copilot-menu { position: relative; }
+.copilot-menu-list { position: absolute; right: 0; bottom: calc(100% + 4px); z-index: 20; display: grid; min-width: 180px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); padding: 4px; }
+.copilot-menu-list button { border: none; background: none; text-align: left; padding: 6px 10px; border-radius: 6px; }
+.copilot-menu-list button:hover { background: var(--panel-2); }
+.copilot-summary { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
+.copilot-summary-text { white-space: pre-wrap; font: inherit; font-size: 13px; margin: 6px 0 0; }
+.assistant-layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 16px; align-items: start; }
+.assistant-threads { display: grid; gap: 4px; }
+.assistant-threads button { text-align: left; border: 1px solid transparent; background: none; border-radius: 8px; padding: 6px 10px; }
+.assistant-threads button.active, .assistant-threads button:hover { background: var(--panel-2); border-color: var(--border); }
+.assistant-log { display: grid; gap: 12px; max-height: 62vh; overflow-y: auto; padding-right: 4px; }
+.assistant-msg { border-radius: 10px; padding: 10px 12px; white-space: pre-wrap; line-height: 1.45; }
+.assistant-msg.user { background: var(--accent-soft); justify-self: end; max-width: 80%; }
+.assistant-msg.assistant { background: var(--panel-2); }
+@media (max-width: 760px) { .assistant-layout { grid-template-columns: 1fr; } .copilot { padding: 8px; } }
+
+/* Diagnóstico de integraciones (preflight) */
+.preflight-areas { display: grid; gap: 16px; }
+.preflight-area { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.preflight-area > header { margin-bottom: 8px; }
+.preflight-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.preflight-list li { display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: start; }
+.pf-icon { display: inline-flex; width: 20px; height: 20px; border-radius: 50%; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: #fff; background: var(--muted); }
+.pf-icon.pass { background: var(--ok, #16a34a); }
+.pf-icon.warn { background: var(--warn, #b45309); }
+.pf-icon.fail { background: var(--bad, #dc2626); }

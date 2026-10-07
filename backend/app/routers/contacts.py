@@ -4,7 +4,7 @@ import re
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -413,6 +413,47 @@ async def import_contacts(
     await session.commit()
     return {"created": created, "updated": updated, "invalid": invalid, "field_errors": field_errors,
             "custom_columns": [f.label for f in by_header.values()]}
+
+
+# --- Habeas data: exportar / eliminar los datos de un cliente (docs/ops/privacy.md) -------------------------------
+@router.get("/{contact_id}/export")
+async def export_contact_data(contact_id: int, agent: Agent = Depends(require_permission("contacts.privacy")),
+                              session: AsyncSession = Depends(get_session)):
+    """Todos los datos del cliente en JSON (solicitud de acceso del titular)."""
+    from app.privacy import export_contact
+
+    contact = await _scoped_contact(session, agent, contact_id)
+    data = await export_contact(session, contact)
+    return JSONResponse(data, headers={
+        "Content-Disposition": f'attachment; filename="cliente-{contact_id}-datos.json"'})
+
+
+class EraseIn(BaseModel):
+    confirm: str  # debe ser "ELIMINAR": la operación es irreversible
+
+
+@router.delete("/{contact_id}/erase")
+async def erase_contact_data(contact_id: int, body: EraseIn, agent: Agent = Depends(require_permission("contacts.privacy")),
+                             session: AsyncSession = Depends(get_session)):
+    """Anonimiza al cliente de forma irreversible (solicitud de supresión del titular)."""
+    from app.privacy import erase_contact
+
+    if body.confirm != "ELIMINAR":
+        raise HTTPException(422, "Escribe ELIMINAR para confirmar: esta acción no se puede deshacer")
+    contact = await _scoped_contact(session, agent, contact_id)
+    stats = await erase_contact(session, contact, agent.id)
+    await session.commit()
+    return {"ok": True, "contact_id": contact_id, "erased": stats}
+
+
+async def _scoped_contact(session: AsyncSession, agent: Agent, contact_id: int) -> Contact:
+    contact = await session.get(Contact, contact_id)
+    if not contact or contact.organization_id != agent.organization_id:
+        raise HTTPException(404, "Cliente no encontrado")
+    clause = contact_clause(await scope_for(session, agent))
+    if clause is not None and await session.scalar(select(Contact.id).where(Contact.id == contact_id, clause)) is None:
+        raise HTTPException(404, "Cliente no encontrado")
+    return contact
 
 
 @router.get("/{contact_id}")

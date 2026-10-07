@@ -93,6 +93,23 @@ DEFAULTS: dict[str, dict] = {
         "session_timeout_minutes": 15,  # sin latido del panel → sesión cerrada y estado desconectado
         "offline_grace_seconds": 120,  # tras cerrar la última pestaña, espera antes de marcar desconectado
     },
+    # Copiloto de IA para asesores y asistente del supervisor (§19.3)
+    "copilot": {
+        "enabled": True,
+        "suggestions": "auto",  # auto = al llegar un mensaje del cliente | on_demand = solo al pedirlas
+        "max_suggestions": 3,
+        "max_per_conversation_per_hour": 12,  # tope de generaciones automáticas por conversación
+        "debounce_seconds": 6,  # espera a que el cliente termine de escribir (ráfagas de mensajes)
+        "history_messages": 20,
+        "next_action": True,
+        "handoff_summary": True,
+        "close_summary": True,
+        "assistant": True,
+        # Cortex por función (None = el del propósito «copilot» / «assistant» o el principal)
+        "reply_cortex_id": None,
+        "summary_cortex_id": None,
+        "assistant_cortex_id": None,
+    },
     "appointments": {
         "enabled": False,
         "title": "Cita",

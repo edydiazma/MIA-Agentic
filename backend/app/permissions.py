@@ -33,6 +33,7 @@ CATALOG: dict[str, dict[str, str]] = {
         "contacts.block": "Bloquear clientes",
         "contacts.import": "Importar clientes",
         "contacts.merge": "Unir clientes duplicados",
+        "contacts.privacy": "Exportar y eliminar datos personales (habeas data)",
         "deals.manage": "Gestionar negocios",
     },
     "Campañas": {

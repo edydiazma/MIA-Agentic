@@ -145,7 +145,7 @@ async def test_attribution_and_conversions(client):
         "name": "Venta WhatsApp", "trigger": "typification", "typification_id": venta, "value": 1000000,
         "google_ads": {"customer_id": "123-456-7890", "conversion_action_id": "999"},
         "meta": {"dataset_id": "DS1", "event_name": "Purchase"}})
-    assert r.status_code == 200, r.text
+    assert r.status_code in (200, 409), r.text  # 409: ya la creó _ensure_conversion_setup (otra prueba)
     await c.post("/api/conversion-actions/scan")  # inicializa el cursor (no sube historia)
 
     for conv in (conv_g, conv_m):
@@ -160,14 +160,8 @@ async def test_attribution_and_conversions(client):
     assert ups[(conv_m["id"], "meta_capi")]["status"] == "pending"
     assert ups[(conv_m["id"], "google_ads")]["status"] == "skipped"
 
-    # Conexión de Google Ads con token vigente en Vault
-    async with SessionLocal() as s:
-        gc = IntegrationConnection(organization_id=1, provider="google_ads", external_account_id="1234567890")
-        s.add(gc)
-        await s.flush()
-        gc.access_token_secret_id = await put_secret(s, "ya29.token", f"google_ads_access:{gc.id}")
-        gc.expires_at = utcnow() + timedelta(hours=1)
-        await s.commit()
+    # Conexión de Google Ads con token vigente en Vault (la misma que usa la otra prueba si ya existe)
+    await _ensure_conversion_setup(c)
 
     assert await conversions.upload_due() == 2
     g = next(b for u, b in sent if "uploadClickConversions" in u)
@@ -187,11 +181,43 @@ async def test_attribution_and_conversions(client):
     channels = {r["channel"]: r for r in rep["by_channel"]}
     assert channels["google_ads"]["sales"] >= 1 and channels["meta_ctwa"]["conversions"] >= 1
     gads = (await c.get("/api/reports/click-to-wa-google")).json()
-    assert gads["totals"]["sales"] >= 1 and gads["by_keyword"][0]["keyword"] == "tracker 2026"
+    assert gads["totals"]["sales"] >= 1 and any(k["keyword"] == "tracker 2026" for k in gads["by_keyword"])
+
+
+async def _ensure_conversion_setup(c) -> None:
+    """Acción de conversión «Venta» → Google Ads y conexión de Google Ads (idempotente): la prueba no depende de que
+    test_attribution_and_conversions haya corrido antes."""
+    await c.put("/api/settings/conversations", json={"typifications": ["Venta", "Consulta resuelta",
+                                                                      "Cotización enviada", "Reclamo"]})
+    from app.models import ConversionAction, Typification
+
+    async with SessionLocal() as s:
+        venta = await s.scalar(select(Typification.id).where(Typification.organization_id == 1,
+                                                              Typification.name == "Venta"))
+        has_action = await s.scalar(select(ConversionAction.id).where(
+            ConversionAction.organization_id == 1, ConversionAction.typification_id == venta))
+        has_conn = await s.scalar(select(IntegrationConnection.id).where(
+            IntegrationConnection.organization_id == 1, IntegrationConnection.provider == "google_ads"))
+    if not has_action:
+        r = await c.post("/api/conversion-actions", json={
+            "name": "Venta WhatsApp", "trigger": "typification", "typification_id": venta, "value": 1000000,
+            "google_ads": {"customer_id": "123-456-7890", "conversion_action_id": "999"},
+            "meta": {"dataset_id": "DS1", "event_name": "Purchase"}})
+        assert r.status_code == 200, r.text
+    if not has_conn:
+        async with SessionLocal() as s:
+            gc = IntegrationConnection(organization_id=1, provider="google_ads", external_account_id="1234567890")
+            s.add(gc)
+            await s.flush()
+            gc.access_token_secret_id = await put_secret(s, "ya29.token", f"google_ads_access:{gc.id}")
+            gc.expires_at = utcnow() + timedelta(hours=1)
+            await s.commit()
 
 
 async def test_upload_backoff_and_permanent_failure(client):
     c = client
+    await _ensure_conversion_setup(c)
+    await c.post("/api/conversion-actions/scan")  # inicializa el cursor si la acción es nueva
     site = await _site(c)
     code = await _collect(c, site["public_key"], {"gclid": "G-FAIL"})
     phone = "573990000009"

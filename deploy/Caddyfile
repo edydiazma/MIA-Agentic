@@ -7,7 +7,7 @@
 
 	# API, WebSocket, webhooks (Meta, Stripe, CRM), script de tracking (/t) y salud → réplicas del backend.
 	# /metrics NO se publica: Prometheus / CloudWatch lo leen dentro de la red de Docker.
-	@backend path /api/* /ws /webhooks/* /hooks/* /auth/* /t/* /w/* /v1/* /health /health/ready /docs /openapi.json
+	@backend path /api/* /ws /webhooks/* /hooks/* /auth/* /t/* /w/* /b/* /v1/* /health /health/ready /docs /openapi.json
 	handle @backend {
 		reverse_proxy {
 			# Todas las réplicas del servicio "backend" (DNS de Docker; se actualiza al escalar)

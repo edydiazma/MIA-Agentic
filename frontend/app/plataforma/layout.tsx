@@ -40,6 +40,7 @@ export default function PlatformLayout({ children }: { children: React.ReactNode
           {link("/plataforma", "Resumen")}
           {link("/plataforma/empresas", "Empresas")}
           {link("/plataforma/planes", "Planes")}
+          {link("/plataforma/diagnostico", "Diagnóstico")}
         </nav>
       </aside>
       <div className="main">

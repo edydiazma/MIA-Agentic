@@ -104,6 +104,7 @@ class Agent(Base):
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
     failed_logins: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = ts(nullable=True)
+    realtime_subject: Mapped[str | None] = mapped_column(UUID(as_uuid=False), nullable=True)
 
 
 class Group(Base):
@@ -429,6 +430,10 @@ class Conversation(Base):
     assignment_count: Mapped[int] = mapped_column(Integer, default=0)
     is_returning: Mapped[bool] = mapped_column(Boolean, default=False)
     last_agent_message_at: Mapped[datetime | None] = ts(nullable=True)
+    handoff_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    handoff_summary_at: Mapped[datetime | None] = ts(nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_at: Mapped[datetime | None] = ts(nullable=True)
     ai_typification_id: Mapped[int | None] = fk("typifications.id")
     ai_classified_at: Mapped[datetime | None] = ts(nullable=True)
     ai_inbound_mark: Mapped[int] = mapped_column(Integer, default=0)
@@ -1499,6 +1504,9 @@ class Call(Base):
     status: Mapped[str] = mapped_column(Text, default="ringing")
     handled_by: Mapped[str | None] = mapped_column(Text, nullable=True)  # voice_agent | agent
     voice_agent_id: Mapped[int | None] = fk("voice_agents.id")
+    initiated_by_agent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # llamada saliente del asesor
+    media_node_id: Mapped[str | None] = mapped_column(Text, nullable=True)  # nodo de voz dueño de la sesión
+    media_node_at: Mapped[datetime | None] = ts(nullable=True)
     agent_id: Mapped[int | None] = fk("agents.id")
     started_at: Mapped[datetime] = ts(default=utcnow)
     answered_at: Mapped[datetime | None] = ts(nullable=True)
@@ -1625,6 +1633,9 @@ class WorkerHeartbeat(Base):
     started_at: Mapped[datetime] = ts(default=utcnow)
     last_beat_at: Mapped[datetime] = ts(default=utcnow)
     loops: Mapped[dict] = mapped_column(JSONB, default=dict)
+    capacity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active_load: Mapped[int] = mapped_column(Integer, default=0)
+    endpoint: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class RealtimeSpill(Base):
@@ -2459,3 +2470,158 @@ class AuthEvent(Base):
     ip: Mapped[str | None] = mapped_column(Text, nullable=True)
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
     detail: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+# =============================================================================
+# Brechas Atom, escala y copiloto (migraciones 30–32). docs/data-model.md §19
+# =============================================================================
+class EmailThread(Base):
+    __tablename__ = "email_threads"
+    __table_args__ = (UniqueConstraint("channel_id", "message_id_header"),)
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    channel_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("channels.id", ondelete="CASCADE"))
+    conversation_id: Mapped[int] = mapped_column(BigInteger)  # FK en la base
+    message_id_header: Mapped[str] = mapped_column(Text)
+    subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class CallPermission(Base):
+    __tablename__ = "call_permissions"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    channel_id: Mapped[int] = mapped_column(BigInteger)  # FK en la base
+    contact_id: Mapped[int] = mapped_column(BigInteger)
+    status: Mapped[str] = mapped_column(Text, default="requested")  # requested|granted|denied|expired|revoked
+    permanent: Mapped[bool] = mapped_column(Boolean, default=False)
+    requested_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    request_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_at: Mapped[datetime] = ts(default=utcnow)
+    responded_at: Mapped[datetime | None] = ts(nullable=True)
+    expires_at: Mapped[datetime | None] = ts(nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class WaWidget(Base):
+    __tablename__ = "wa_widgets"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    name: Mapped[str] = mapped_column(Text)
+    key: Mapped[str] = mapped_column(Text, unique=True)
+    config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    link_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # FK wa_links
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    impressions: Mapped[int] = mapped_column(BigInteger, default=0)
+    clicks: Mapped[int] = mapped_column(BigInteger, default=0)
+    created_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class Job(Base):
+    """Cola en Postgres: tomar con public.jobs_claim(queue, worker, limit, lease_s)."""
+
+    __tablename__ = "jobs"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int | None] = fk("organizations.id", ondelete="CASCADE")
+    queue: Mapped[str] = mapped_column(Text, default="default")
+    kind: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    dedupe_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    priority: Mapped[int] = mapped_column(SmallInteger, default=100)
+    status: Mapped[str] = mapped_column(Text, default="queued")  # queued|running|succeeded|failed|dead|cancelled
+    run_at: Mapped[datetime] = ts(default=utcnow)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=5)
+    locked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    locked_until: Mapped[datetime | None] = ts(nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    started_at: Mapped[datetime | None] = ts(nullable=True)
+    finished_at: Mapped[datetime | None] = ts(nullable=True)
+
+
+class CopilotSuggestion(Base):
+    """Particionada: PK (id, created_at)."""
+
+    __tablename__ = "copilot_suggestions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, default=utcnow)
+    organization_id: Mapped[int] = mapped_column(BigInteger)
+    conversation_id: Mapped[int] = mapped_column(BigInteger)
+    agent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    kind: Mapped[str] = mapped_column(Text)  # reply | draft | next_action | summary | rewrite | translate
+    content: Mapped[dict] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(Text, default="shown")  # shown | accepted | edited | dismissed | expired
+    final_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    edit_distance: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ai_call_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    decided_at: Mapped[datetime | None] = ts(nullable=True)
+
+
+class AssistantThread(Base):
+    __tablename__ = "assistant_threads"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int] = org_fk()
+    agent_id: Mapped[int] = mapped_column(BigInteger)  # FK en la base
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+    updated_at: Mapped[datetime] = ts(default=utcnow)
+
+
+class AssistantMessage(Base):
+    __tablename__ = "assistant_messages"
+
+    id: Mapped[int] = pk()
+    thread_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("assistant_threads.id", ondelete="CASCADE"))
+    role: Mapped[str] = mapped_column(Text)  # user | assistant | tool
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tool_calls: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    charts: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    ai_call_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = ts(default=utcnow)
+
+
+# =============================================================================
+# Diagnóstico de integraciones (migración 33). docs/data-model.md §20
+# =============================================================================
+class SystemCheckRun(Base):
+    __tablename__ = "system_check_runs"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int | None] = fk("organizations.id", ondelete="CASCADE")
+    trigger: Mapped[str] = mapped_column(Text, default="manual")  # manual | cli | deploy | schedule
+    started_by: Mapped[int | None] = fk("agents.id", ondelete="SET NULL")
+    app_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    passed: Mapped[int] = mapped_column(Integer, default=0)
+    warned: Mapped[int] = mapped_column(Integer, default=0)
+    failed: Mapped[int] = mapped_column(Integer, default=0)
+    skipped: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime] = ts(default=utcnow)
+    finished_at: Mapped[datetime | None] = ts(nullable=True)
+
+
+class SystemCheck(Base):
+    __tablename__ = "system_checks"
+
+    id: Mapped[int] = pk()
+    organization_id: Mapped[int | None] = fk("organizations.id", ondelete="CASCADE")  # null = plataforma
+    area: Mapped[str] = mapped_column(Text)
+    check_key: Mapped[str] = mapped_column(Text)
+    label: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text)  # pass | warn | fail | skipped
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data: Mapped[dict] = mapped_column(JSONB, default=dict)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    run_id: Mapped[int | None] = fk("system_check_runs.id", ondelete="SET NULL")
+    checked_at: Mapped[datetime] = ts(default=utcnow)

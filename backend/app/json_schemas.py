@@ -59,7 +59,7 @@ class CortexValidationDoc(BaseModel):
 class CortexDoc(BaseModel):
     name: str = Field(min_length=1)
     description: str | None = None
-    purpose: Literal["chat", "classification", "learning", "flow", "json_edit", "qa", "agent_test", "onboarding", "golden", "any"] = "any"
+    purpose: Literal["chat", "classification", "learning", "flow", "json_edit", "qa", "agent_test", "onboarding", "golden", "copilot", "assistant", "any"] = "any"
     strategy: Literal["failover", "lowest_latency", "weighted"] = "failover"
     max_latency_ms: int | None = Field(default=None, ge=100)
     max_attempts: int = Field(default=3, ge=1, le=10)

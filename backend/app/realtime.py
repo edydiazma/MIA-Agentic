@@ -16,6 +16,12 @@ asesor) la lista de (empresa, asesor) que tiene conectados; las demás la guarda
 no se renueva en PRESENCE_TTL (réplica caída). online_agent_ids() = locales ∪ remotos vigentes.
 
 REALTIME_MODE=local desactiva NOTIFY/LISTEN (un solo proceso, pruebas).
+
+Panel en Supabase Realtime (REALTIME_TRANSPORT=supabase|both, §19.2): la réplica que publica también envía el
+evento por la API de broadcast de Supabase al tema privado `org:{id}:events` (los de un asesor a
+`org:{id}:agent:{agent_id}`) con el mismo {event, data} que el WebSocket; el navegador se suscribe con el token de
+GET /api/realtime/token. Como el navegador ya no abre /ws, la presencia también cuenta las sesiones con latido
+reciente (agent_sessions.last_seen_at, que el panel renueva con POST /api/me/heartbeat).
 """
 
 import asyncio
@@ -39,6 +45,15 @@ MAX_NOTIFY_BYTES = 7500
 PRESENCE_EVERY = 20.0
 PRESENCE_TTL = 60.0
 PRESENCE_EVENT = "_presence"  # interno: nunca llega a los sockets
+SESSIONS_EVERY = 15.0  # presencia por latido del panel (transporte Supabase)
+SESSIONS_FRESH_S = 60
+
+
+def supabase_http():
+    """Cliente HTTP para la API de broadcast de Supabase (las pruebas lo reemplazan)."""
+    import httpx
+
+    return httpx.AsyncClient(timeout=10)
 
 # Eventos que también se entregan a webhooks salientes.
 PUBLIC_EVENTS = {"message.new", "message.status", "conversation.updated", "conversation.handoff",
@@ -56,6 +71,9 @@ class Hub:
         self._conn = None  # conexión asyncpg del LISTEN
         self.listening = False
         self._tasks: set[asyncio.Task] = set()
+        self.transport = get_settings().realtime_transport
+        self.session_pairs: set[tuple[int, int]] = set()  # (empresa, asesor) con latido reciente del panel
+        self._sessions: asyncio.Task | None = None
 
     # -- Sockets locales
     async def connect(self, ws: WebSocket, agent_id: int, organization_id: int) -> None:
@@ -79,7 +97,7 @@ class Hub:
 
     def online_agent_ids(self, organization_id: int | None = None) -> set[int]:
         now = time.monotonic()
-        pairs = self._local_pairs()
+        pairs = self._local_pairs() | self.session_pairs
         for seen, remote in self.remote.values():
             if now - seen <= PRESENCE_TTL:
                 pairs |= remote
@@ -103,6 +121,8 @@ class Hub:
             self._spawn(deliver(event, data, organization_id=organization_id))
         self._spawn(self._push(event, data, organization_id))
         self._spawn(self._panel_notify(event, data, organization_id))
+        if self.transport in ("supabase", "both"):
+            self._spawn(self._supabase_publish(f"org:{organization_id}:events", event, data))
 
     async def send_to_agent(self, organization_id: int, agent_id: int, event: str, data: dict) -> None:
         """Evento privado de un asesor (p. ej. notification.new): solo a sus sockets, en cualquier réplica."""
@@ -110,6 +130,45 @@ class Hub:
         await self._deliver_local(organization_id, payload, agent_id)
         if self.mode == "pg":
             await self._notify({"o": self.origin, "org": organization_id, "a": agent_id, "p": payload})
+        if self.transport in ("supabase", "both"):
+            self._spawn(self._supabase_publish(f"org:{organization_id}:agent:{agent_id}", event, data))
+
+    async def _supabase_publish(self, topic: str, event: str, data: dict) -> None:
+        """POST {SUPABASE_URL}/realtime/v1/api/broadcast con la clave secreta (solo backend)."""
+        s = get_settings()
+        if not (s.supabase_url and s.supabase_secret_key):
+            return
+        body = {"messages": [{"topic": topic, "event": event, "private": True,
+                              "payload": json.loads(json.dumps({"event": event, "data": data}, default=str))}]}
+        try:
+            async with supabase_http() as http:
+                r = await http.post(f"{s.supabase_url.rstrip('/')}/realtime/v1/api/broadcast", json=body,
+                                    headers={"apikey": s.supabase_secret_key,
+                                             "Authorization": f"Bearer {s.supabase_secret_key}"})
+            if r.status_code >= 400:
+                raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+            metrics.realtime_published.inc("supabase")
+        except Exception:
+            metrics.realtime_errors.inc("supabase")
+            log.warning("No se pudo publicar %s en Supabase Realtime", event, exc_info=True)
+
+    async def refresh_session_presence(self) -> None:
+        from app.db import engine
+
+        async with engine.connect() as conn:
+            rows = (await conn.execute(text("""
+                select distinct organization_id, agent_id from public.agent_sessions
+                where ended_at is null and last_seen_at > now() - make_interval(secs => :f)"""),
+                {"f": SESSIONS_FRESH_S})).all()
+        self.session_pairs = {(int(o), int(a)) for o, a in rows}
+
+    async def _sessions_forever(self) -> None:
+        while True:
+            try:
+                await self.refresh_session_presence()
+            except Exception:
+                log.debug("Presencia por latido no disponible", exc_info=True)
+            await asyncio.sleep(SESSIONS_EVERY)
 
     async def _panel_notify(self, event: str, data: dict, organization_id: int) -> None:
         """Campana del panel (app/notifications.py): una vez por evento, en la réplica que publica."""
@@ -233,22 +292,24 @@ class Hub:
                     self.remote.pop(origin, None)
 
     async def start(self) -> None:
+        if self.transport in ("supabase", "both") and self._sessions is None:
+            self._sessions = asyncio.create_task(self._sessions_forever())
         if self.mode != "pg" or self._listener is not None:
             return
         self._listener = asyncio.create_task(self._listen_forever())
         self._presence = asyncio.create_task(self._presence_forever())
 
     async def stop(self) -> None:
-        for t in (self._listener, self._presence):
+        for t in (self._listener, self._presence, self._sessions):
             if t is not None:
                 t.cancel()
-        for t in (self._listener, self._presence):
+        for t in (self._listener, self._presence, self._sessions):
             if t is not None:
                 try:
                     await t
                 except (asyncio.CancelledError, Exception):
                     pass
-        self._listener = self._presence = None
+        self._listener = self._presence = self._sessions = None
 
     def _spawn(self, coro) -> None:
         try:

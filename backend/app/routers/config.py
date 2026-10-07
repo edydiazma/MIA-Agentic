@@ -260,13 +260,19 @@ async def _check_bot(session: AsyncSession, org: int, bot_id: int | None) -> int
     return a.id
 
 
+def server_waba(org: int) -> str | None:
+    """WA_WABA_ID del servidor solo vale para la empresa de la instalación (ORGANIZATION_ID). En modo SaaS una
+    empresa nunca hereda la WABA de la plataforma: los eventos de esa cuenta llegarían a la empresa equivocada."""
+    return (env.wa_waba_id or None) if org == env.organization_id else None
+
+
 @router.get("/channels")
 async def list_channels(agent: Agent = Depends(current_agent), session: AsyncSession = Depends(get_session)):
     rows = (await session.scalars(select(Channel).where(Channel.organization_id == agent.organization_id)
                                   .order_by(Channel.id))).unique().all()
     return {
         "channels": [_ch(c) for c in rows],
-        "waba_id": next((c.waba_id for c in rows if c.waba_id), None) or env.wa_waba_id or None,
+        "waba_id": next((c.waba_id for c in rows if c.waba_id), None) or server_waba(agent.organization_id),
         "webhook_path": "/webhooks/whatsapp",
         "app_secret_configured": bool(env.wa_app_secret),
     }
@@ -283,7 +289,7 @@ async def create_channel(body: ChannelIn, agent: Agent = Depends(require_admin),
     bot_id = await _check_bot(session, org, body.bot_id) or await session.scalar(
         select(AIAgent.id).where(AIAgent.organization_id == org).order_by(AIAgent.id).limit(1))
     c = Channel(organization_id=org, name=body.name, phone_number_id=pnid, display_phone=body.display_phone,
-                waba_id=body.waba_id or env.wa_waba_id or None, default_ai_agent_id=bot_id)
+                waba_id=body.waba_id or server_waba(org), default_ai_agent_id=bot_id)
     session.add(c)
     await session.flush()
     if body.access_token:

@@ -18,6 +18,10 @@ import type { QuickReplyV2 } from "@/lib/productivity-types";
 import { useApi } from "@/components/ui";
 import { CloseModal, ResourceModal, TemplateModal, TransferModal } from "./modals";
 import ConversationTags from "./ConversationTags";
+import CopilotBar, { type CopilotPick } from "@/components/copilot/CopilotBar";
+import EmailMessage from "./EmailMessage";
+import EmailComposer from "./EmailComposer";
+import OutboundCallButton from "@/components/voice/OutboundCallButton";
 
 const SENDER: Record<Message["sender_type"], string> = {
   contact: "",
@@ -70,7 +74,7 @@ function Bubble({ m, agentName }: { m: Message; agentName: (id: number | null) =
         </div>
       )}
       <Media m={m} />
-      {m.text && <p>{m.text}</p>}
+      {m.type === "email" ? <EmailMessage messageId={m.id} fallback={m.text} /> : m.text && <p>{m.text}</p>}
       {m.type === "audio" && !m.has_media && m.transcript && <p className="transcript">“{m.transcript}”</p>}
       <div className="meta">
         {fmtTime(m.created_at)}
@@ -105,6 +109,8 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
   const quick = useApi<QuickReplyV2[]>(`/api/quick-replies?conversation_id=${c.id}`);
   const [picked, setPicked] = useState<QuickReplyV2 | null>(null);
   const [noteMode, setNoteMode] = useState(false);
+  // Sugerencia del copiloto insertada en el compositor (al enviar se reporta si se usó tal cual o editada)
+  const [copilotPick, setCopilotPick] = useState<CopilotPick | null>(null);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "end" });
@@ -114,6 +120,7 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
     setText("");
     setPicked(null);
     setNoteMode(false);
+    setCopilotPick(null);
   }, [c.id]);
 
   // Ventana de respuesta libre de un asesor: WhatsApp 24 h; Messenger e Instagram 7 días (HUMAN_AGENT); chat web siempre
@@ -159,9 +166,15 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
         r.messages.forEach(onMessage);
       } else {
         onMessage(await send<Message>(`/api/conversations/${c.id}/messages`, "POST", { text: body }));
+        if (copilotPick) {
+          // El servidor decide «aceptada» (sin cambios) o «editada» comparando con lo sugerido
+          send(`/api/copilot/suggestions/${copilotPick.id}/outcome`, "POST", { status: "accepted", final_text: body })
+            .catch(() => undefined);
+        }
       }
       setText("");
       setPicked(null);
+      setCopilotPick(null);
     });
   }
 
@@ -195,7 +208,9 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
             <strong>{contactLabel(c.contact)}</strong>{" "}
             <span className="muted">
               {CHANNEL_ICONS[c.channel_provider]}{" "}
-              {isWhatsApp ? `+${c.contact.wa_id}` : `${CHANNEL_LABELS[c.channel_provider]}${c.channel_name ? ` · ${c.channel_name}` : ""}`}
+              {isWhatsApp
+                ? c.contact.wa_id ? `+${c.contact.wa_id}` : c.contact.wa_username ? `@${c.contact.wa_username}` : "Usuario de WhatsApp"
+                : `${CHANNEL_LABELS[c.channel_provider]}${c.channel_name ? ` · ${c.channel_name}` : ""}`}
             </span>
             <div className="small">
               <span className={`status ${c.status}`}>{STATUS_LABEL[c.status]}</span>
@@ -208,6 +223,7 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
           </div>
         </div>
         <div className="actions">
+          {isWhatsApp && <OutboundCallButton conversationId={c.id} compact />}
           {(c.status !== "human" || c.assigned_agent?.id !== me?.id) && (
             <button disabled={busy} onClick={() => action("assign")}>
               Tomar
@@ -236,6 +252,20 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
         <div ref={bottom} />
       </div>
 
+      {c.status !== "closed" && (
+        <CopilotBar
+          conversationId={c.id}
+          active={c.status === "human" && windowOpen && !noteMode}
+          text={text}
+          setText={(t) => {
+            setText(t);
+            setPicked(null);
+          }}
+          onPick={setCopilotPick}
+          onOpenTemplate={() => setModal("template")}
+          onOpenTransfer={() => setModal("transfer")}
+        />
+      )}
       {error && <div className="error bar">{error}</div>}
       {!windowOpen ? (
         isWhatsApp ? (
@@ -254,6 +284,8 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
           </div>
         )
       ) : (
+        <>
+        {c.channel_provider === "email" && <EmailComposer conversationId={c.id} onSent={onMessage} />}
         <form className={`composer${noteMode ? " note" : ""}`} onSubmit={sendText}>
           {picked && picked.attachments.length > 0 && !noteMode && (
             <div className="small muted" style={{ width: "100%" }}>
@@ -361,6 +393,7 @@ export default function Chat({ conversation: c, messages, me, agentName, onMessa
             {noteMode ? "Guardar nota" : "Enviar"}
           </button>
         </form>
+        </>
       )}
 
       {modal === "transfer" && (

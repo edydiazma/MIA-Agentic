@@ -242,6 +242,8 @@ async def send_text(session: AsyncSession, conv: Conversation, text: str, sender
         client.human = sender_type == "agent"  # Messenger/Instagram: HUMAN_AGENT fuera de las 24 h
         ids = await client.send_text(wa_address(conv.contact), text)
         msg.wa_message_id, msg.status = ids[0], "sent"
+        if getattr(client, "last_meta", None):  # correo: asunto, Message-ID y destinatarios
+            msg.type, msg.metadata_ = "email", client.last_meta
     except Exception as e:
         msg.status, msg.error = "failed", str(e)[:2000]
     return [await record_message(session, conv, msg)]
@@ -330,6 +332,7 @@ async def handoff(session: AsyncSession, conv: Conversation, reason: str, group_
                                                   business_open=hours["open"])
         await routing.after_assignment(session, conv, conv.assigned_agent_id)
     await commit_and_broadcast(session, conv, "conversation.handoff")
+    __import__("app.copilot.hooks", fromlist=["on_handoff"]).on_handoff(conv.id)  # resumen para el asesor (nunca lanza)
 
     if not hours["open"]:
         await business_hours.send_out_of_hours(session, conv, hours)
@@ -360,6 +363,7 @@ async def close(session: AsyncSession, conv: Conversation, typification: Typific
             await on_event(conv.id, "typified")
     __import__("app.quality.hooks", fromlist=["on_close"]).on_close(conv.id)  # QA automático (nunca lanza)
     __import__("app.golden.hooks", fromlist=["on_close"]).on_close(conv.id)  # llaves del cliente (nunca lanza)
+    __import__("app.copilot.hooks", fromlist=["on_close"]).on_close(conv.id)  # resumen de la conversación (nunca lanza)
 
 
 # --- Alertas --------------------------------------------------------------------

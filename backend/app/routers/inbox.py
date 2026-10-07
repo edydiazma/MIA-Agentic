@@ -123,7 +123,7 @@ async def list_conversations(
     group_id: int | None = None,
     tag: str | None = None,
     q: str | None = None,
-    channel: str | None = Query(default=None, pattern="^(whatsapp_cloud|messenger|instagram|webchat)$"),
+    channel: str | None = Query(default=None, pattern="^(whatsapp_cloud|messenger|instagram|webchat|email)$"),
     substate: str | None = Query(default=None, pattern=SUBSTATES),
     date_from: date | None = None,  # fecha de creación (zona de la empresa)
     date_to: date | None = None,

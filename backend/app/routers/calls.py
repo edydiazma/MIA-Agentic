@@ -13,7 +13,7 @@ from app.auth import current_agent
 from app.db import get_session, set_actor
 from app.models import Agent, Call, CallEvent, CallTurn, Contact
 from app.voice import calls as signaling
-from app.voice.session import registry
+from app.voice import nodes
 
 router = APIRouter(prefix="/api/calls", tags=["calls"])
 
@@ -136,8 +136,7 @@ async def bridge(call_id: int, body: SdpIn, agent: Agent = Depends(current_agent
                  session: AsyncSession = Depends(get_session)):
     """Transferencia desde el agente de voz: el navegador envía una oferta y el servidor puentea el audio."""
     call = await _call(session, call_id, agent.organization_id)
-    media = registry.get(call.id)
-    if not media:
+    if not nodes.has_session(call):
         raise HTTPException(409, "La llamada ya no está activa")
     won = await session.execute(update(Call).where(Call.id == call.id, Call.status == "transferring")
                                 .values(status="connected", handled_by="agent", agent_id=agent.id).returning(Call.id))
@@ -146,7 +145,10 @@ async def bridge(call_id: int, body: SdpIn, agent: Agent = Depends(current_agent
         raise HTTPException(409, "Otro asesor ya tomó esta llamada")
     await signaling.log_event(session, call.id, "bridge", {"agent_id": agent.id})
     await session.commit()
-    answer_sdp = await media.bridge_to_agent(body.sdp)
+    try:
+        answer_sdp = await nodes.bridge(session, call, body.sdp)  # local o en el nodo de voz dueño de la sesión
+    except nodes.VoiceNodeError as e:
+        raise HTTPException(409, str(e)) from None
     await session.refresh(call)
     await session.refresh(call, ["contact"])
     await signaling.broadcast_call(call, "call.taken")

@@ -1,6 +1,7 @@
 """CRM: negocios, conexión OAuth (tokens en Vault), sincronización bidireccional sin eco y adaptador Salesforce."""
 
 import base64
+import uuid
 import hashlib
 import hmac
 import json
@@ -33,11 +34,10 @@ class FakeHubSpot:
         self.notes: list[dict] = []
         self.assoc: list[tuple[str, str]] = []
         self.calls: list[tuple[str, str]] = []
-        self.next_id = 100
-
     def _new(self) -> str:
-        self.next_id += 1
-        return str(self.next_id)
+        # Únicos en toda la sesión (la conexión de HubSpot sobrevive entre pruebas y pytest puede importar este
+        # módulo dos veces, con contadores separados): aleatorios de 12 dígitos
+        return str(uuid.uuid4().int % 10**12)
 
     @staticmethod
     def _stamp(dt: datetime | None = None) -> str:
@@ -160,7 +160,8 @@ async def test_hubspot_oauth_push_and_pull_without_echo(client, fake_hubspot):
                         params={"code": "abc", "state": "manipulado"}, follow_redirects=False)).headers[
         "location"].count("error=") == 1
     async with SessionLocal() as s:
-        conn = await s.scalar(select(IntegrationConnection).where(IntegrationConnection.provider == "hubspot"))
+        conn = await s.scalar(select(IntegrationConnection).where(IntegrationConnection.provider == "hubspot",
+                                                                  IntegrationConnection.organization_id == 1))
         assert await get_secret(s, conn.access_token_secret_id) == "at-1"
         assert await get_secret(s, conn.refresh_token_secret_id) == "rt-1"
         assert conn.external_account_id == "4242"
@@ -207,14 +208,23 @@ async def test_hubspot_oauth_push_and_pull_without_echo(client, fake_hubspot):
     assert len(fake_hubspot.writes()) == writes_before
 
     # 5) Nota al cerrar la conversación
-    await c.post(f"/api/conversations/{conv['id']}/close", json={"typification": "Cotización enviada"})
-    await c.post("/api/integrations/hubspot/sync")
+    # La tipificación debe existir y estar activa (otras pruebas reemplazan la lista de la empresa 1)
+    await c.put("/api/settings/conversations", json={"typifications": ["Venta", "Consulta resuelta",
+                                                                      "Cotización enviada", "Reclamo"]})
+    r = await c.post(f"/api/conversations/{conv['id']}/close", json={"typification": "Cotización enviada"})
+    assert r.status_code == 200, r.text
+    # Cada sincronización procesa hasta 200 filas de la cola; con la empresa 1 compartida puede haber más pendientes
+    for _ in range(10):
+        await c.post("/api/integrations/hubspot/sync")
+        if fake_hubspot.notes:
+            break
     assert fake_hubspot.notes and "Tipificación: Cotización enviada" in fake_hubspot.notes[-1]["properties"]["hs_note_body"]
 
     # 6) Desconectar borra secretos y vínculos
     assert (await c.delete("/api/integrations/hubspot")).status_code == 200
     async with SessionLocal() as s:
-        assert not await s.scalar(select(IntegrationConnection.id).where(IntegrationConnection.provider == "hubspot"))
+        assert not await s.scalar(select(IntegrationConnection.id).where(IntegrationConnection.provider == "hubspot",
+                                                                         IntegrationConnection.organization_id == 1))
         assert await s.scalar(select(IntegrationOutbox.id).limit(1))  # la bitácora se conserva
 
 

@@ -62,6 +62,7 @@ export const NAV: NavEntry[] = [
         items: [
           { label: "En tiempo real", href: "/reportes/tiempo-real" },
           { label: "Nivel de servicio", href: "/reportes/servicio" },
+          { label: "Copiloto", href: "/reportes/copiloto" },
           { label: "Reporte Login", href: "/reportes/login" },
           { label: "Reporte general", href: "/reportes/general" },
           { label: "Etapas de contactos", href: "/reportes/etapas" },
@@ -113,6 +114,7 @@ export const NAV: NavEntry[] = [
   },
   { label: "Seguimiento", icon: "📌", href: "/seguimiento" },
   { label: "Monitoreo", icon: "🛰️", href: "/monitoreo", staffOnly: true },  // admin o supervisor
+  { label: "Asistente", icon: "✨", href: "/asistente", staffOnly: true },
   {
     label: "Mi espacio",
     icon: "🎯",
@@ -136,10 +138,12 @@ export const NAV: NavEntry[] = [
         label: "",
         items: [
           { label: "Asistente de configuración", href: "/onboarding" },
+          { label: "Diagnóstico", href: "/configuraciones/diagnostico" },
           { label: "Plataforma", href: "/configuraciones/plataforma" },
           { label: "Mensajería", href: "/configuraciones/mensajeria" },
           { label: "Conversaciones", href: "/configuraciones/conversaciones" },
           { label: "Magia de IA", href: "/configuraciones/magia" },
+          { label: "Copiloto", href: "/configuraciones/copiloto" },
           { label: "Clasificación IA", href: "/configuraciones/clasificacion" },
           { label: "Campos de cliente", href: "/configuraciones/campos" },
           { label: "Campos y datos maestros", href: "/configuraciones/datos-maestros" },
@@ -157,6 +161,7 @@ export const NAV: NavEntry[] = [
           { label: "Integraciones (CRM y Ads)", href: "/configuraciones/integraciones" },
           { label: "Atribución web", href: "/configuraciones/atribucion" },
           { label: "Mensajes disparadores", href: "/configuraciones/mensajes-disparadores" },
+          { label: "Botón de WhatsApp", href: "/configuraciones/boton-whatsapp" },
           { label: "Conversiones", href: "/configuraciones/conversiones" },
           { label: "API y conectores", href: "/configuraciones/api" },
           { label: "Plan y facturación", href: "/configuraciones/plan" },

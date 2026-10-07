@@ -144,6 +144,15 @@ async def get_link(session: AsyncSession, conn_id: int, local_type: str, local_i
 async def save_link(session: AsyncSession, conn_id: int, local_type: str, local_id: int, remote_type: str,
                     remote_id: str, sync_hash: str | None, remote_updated_at: datetime | None = None) -> ExternalLink:
     link = await get_link(session, conn_id, local_type, local_id)
+    # El CRM puede devolver el MISMO registro para dos clientes locales (p. ej. el mismo correo en dos fichas): no se
+    # vincula dos veces — se reporta como posible duplicado en vez de romper la cola con un error de integridad.
+    taken = await session.scalar(select(ExternalLink.local_id).where(
+        ExternalLink.connection_id == conn_id, ExternalLink.remote_type == remote_type,
+        ExternalLink.remote_id == remote_id, ExternalLink.local_id != local_id))
+    if taken is not None:
+        raise CRMError(f"El registro {remote_type} {remote_id} del CRM ya está vinculado al {local_type} #{taken}: "
+                       f"posible duplicado (mismo correo o teléfono). Únelos en Clientes → Posibles duplicados.",
+                       retryable=False)
     if not link:
         link = ExternalLink(connection_id=conn_id, local_type=local_type, local_id=local_id, remote_type=remote_type,
                             remote_id=remote_id)
@@ -542,9 +551,16 @@ async def crm_loop() -> None:
         await asyncio.sleep(30)
         try:
             async with SessionLocal() as session:
-                ids = (await session.scalars(select(IntegrationConnection.id).where(
-                    IntegrationConnection.status == "connected", IntegrationConnection.sync_enabled,
-                    IntegrationConnection.provider.in_(("hubspot", "salesforce"))))).all()
+                rows = (await session.execute(select(IntegrationConnection.id, IntegrationConnection.organization_id)
+                                              .where(IntegrationConnection.status == "connected",
+                                                     IntegrationConnection.sync_enabled,
+                                                     IntegrationConnection.provider.in_(("hubspot", "salesforce"))))).all()
+            ids = [r[0] for r in rows]
+            from app import jobs
+
+            if jobs.enabled():  # una conexión por trabajo (cola "crm"): en paralelo y con reintentos de la cola
+                await jobs.schedule("crm.sync_connection", [({"connection_id": i}, f"crm:{i}", o) for i, o in rows])
+                continue
             for conn_id in ids:
                 try:
                     await sync_connection(conn_id)

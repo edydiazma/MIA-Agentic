@@ -4,8 +4,9 @@
 #   cd deploy && cp .env.example .env   # completar
 #   docker compose up -d --build        # BACKEND_REPLICAS (por defecto 2) réplicas de la API + 1 worker
 #   ./update.sh                         # actualización escalonada (worker primero, luego la API réplica por réplica)
+#   docker compose --profile voice up -d   # + nodo de voz (agentes de voz IA) con red del host (UDP), §19.2
 #
-# Una sola imagen para backend y worker: cambia solo ROLE (docs/data-model.md §12.1).
+# Una sola imagen para backend, worker y voz: cambia solo ROLE (docs/data-model.md §12.1, §19.2).
 x-logging: &logging
   driver: json-file
   options: { max-size: "20m", max-file: "5" }
@@ -27,17 +28,32 @@ services:
       CORS_ORIGINS: https://${DOMAIN}
       APP_VERSION: ${APP_VERSION:-dev}
     expose: ["8000"]
+    extra_hosts: ["host.docker.internal:host-gateway"]  # señalización interna hacia el nodo de voz (red del host)
     deploy:
       replicas: ${BACKEND_REPLICAS:-2}
 
-  # Tareas de fondo (flujos, inactividad, conversiones, CRM, catálogo, enriquecimiento...). Cada tarea corre una
-  # sola vez en el clúster (advisory lock): una segunda réplica del worker queda en espera como respaldo.
+  # Tareas de fondo (flujos, inactividad, conversiones, CRM, catálogo, enriquecimiento...). Cada tarea programada
+  # corre una sola vez en el clúster (advisory lock); los trabajos de la cola (documentos, CRM, conversiones,
+  # enriquecimiento) los atienden TODOS los workers en paralelo: `--scale worker=2` suma capacidad (§19.2).
   worker:
     <<: *backend
     environment:
       ROLE: worker
       APP_VERSION: ${APP_VERSION:-dev}
     expose: ["8000"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+
+  # Nodo de voz (opcional, perfil "voice"): sesiones de medios del agente de voz IA (aiortc + modelo en tiempo
+  # real). Necesita la red del host (UDP de WebRTC); la API le reenvía la señalización por HTTP interno
+  # (VOICE_DISPATCH=remote, VOICE_INTERNAL_TOKEN). No se publica en Caddy.
+  voice:
+    <<: *backend
+    profiles: ["voice"]
+    network_mode: host
+    environment:
+      ROLE: voice
+      APP_VERSION: ${APP_VERSION:-dev}
+      VOICE_NODE_URL: ${VOICE_NODE_URL:-http://host.docker.internal:8000}
 
   frontend:
     build:

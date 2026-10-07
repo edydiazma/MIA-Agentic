@@ -125,6 +125,27 @@ contacts who opted out → `409 opted_out`. Messages are sent on behalf of the b
 pass `agent_id` to attribute them to an advisor. Conversation events done through the API are recorded with
 actor `api`; deals and tags created through it have source `api`.
 
+### Routing options on sends
+
+`POST /v1/messages` and `POST /v1/conversations/{id}/messages` (text or template) accept, besides `text` /
+`template`, options applied **after** the message is sent (they are validated first, so an invalid option never
+leaves a message half-processed):
+
+| Field | Type | Effect |
+|---|---|---|
+| `assign` | agent id or e-mail | assigns the conversation to that advisor (status `human`) |
+| `group` | group id or name (case-insensitive) | sets the conversation's group |
+| `pause_bot` | boolean | `true`: the bot stops answering (queue of the group); `false`: back to the bot if nobody is assigned |
+| `owner_agent_id` | agent id | sets the client owner (sticky routing) |
+| `tags` | string[] | adds conversation tags |
+| `typification` | name | records the typification without closing |
+
+```bash
+curl -s $API/v1/messages -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"phone": "573001234567", "template": {"name": "cita_confirmacion", "language": "es", "values": ["Ana", "15 oct"]},
+       "assign": "asesor@empresa.com", "group": "Taller", "tags": ["cita"], "pause_bot": true}'
+```
+
 ## Webhooks and REST Hooks (Zapier, Make, n8n)
 
 Events: `message.new`, `message.status`, `conversation.updated`, `conversation.handoff`,

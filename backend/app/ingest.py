@@ -168,7 +168,9 @@ async def _org_for_waba(session, waba_id: str | None) -> int | None:
     """Empresa dueña de la cuenta de WhatsApp (None si no es de ninguna: el evento se ignora)."""
     if not waba_id:
         return None
-    return await session.scalar(select(Channel.organization_id).where(Channel.waba_id == waba_id).limit(1))
+    # Determinista: el canal más antiguo de esa WABA (una WABA pertenece a una sola empresa)
+    return await session.scalar(select(Channel.organization_id).where(Channel.waba_id == waba_id)
+                                .order_by(Channel.id).limit(1))
 
 
 async def _handle_account_event(waba_id: str | None, field: str, v: dict) -> None:
@@ -299,6 +301,15 @@ async def _handle_message(phone_number_id: str, m: dict, sender: dict | str | No
                 msg.error = f"No se pudo descargar el archivo: {e}"[:2000]
 
         await record_message(session, conv, msg)
+        interactive = m.get("interactive") or {}
+        if raw_type == "interactive" and interactive.get("type") == "call_permission_reply":
+            try:  # el cliente aceptó / rechazó recibir llamadas de la empresa (§19.1)
+                from app.voice.outbound import on_permission_reply
+
+                await on_permission_reply(session, channel, contact, conv, interactive.get("call_permission_reply") or {})
+            except Exception:  # noqa: BLE001 — nunca impide procesar el mensaje
+                log.exception("No se pudo registrar el permiso de llamada de la conversación %s", conv.id)
+                await session.rollback()
         if raw_type == "order":  # pedido del catálogo: productos comprados (Cliente 360)
             from app.interaction_products import record_order
 
@@ -339,6 +350,8 @@ async def after_inbound(session, conv: Conversation, msg: Message, raw: dict, is
     handled = await flows_inbound(session, conv, msg, link) or await on_inbound(session, conv, msg, is_new)
     await maybe_periodic(session, conv)
     await session.refresh(conv)
+    if conv.status == "human":  # copiloto: sugerencias para el asesor (antirrebote, nunca lanza)
+        __import__("app.copilot.hooks", fromlist=["on_inbound"]).on_inbound(conv.id, msg.id)
     return conv.status, conv.id, bool(handled)
 
 

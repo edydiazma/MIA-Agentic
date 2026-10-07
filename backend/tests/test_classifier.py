@@ -77,6 +77,8 @@ async def _setup_conversation(phone: str) -> int:
 
 async def test_classifier_end_to_end(client):
     c = client
+    # Las tipificaciones que usa esta prueba (otras pruebas reemplazan la lista de la empresa 1)
+    await c.put("/api/settings/conversations", json={"typifications": ["Venta", "Consulta resuelta", "Reclamo"]})
     group = (await c.post("/api/groups", json={"name": "Garantías", "description": "Garantías, taller y reclamos"}))
     assert group.status_code == 200, group.text
     for f in (
@@ -101,7 +103,11 @@ async def test_classifier_end_to_end(client):
         s.add_all([conn, cx])
         await s.flush()
         s.add(CortexMember(cortex_id=cx.id, connection_id=conn.id, position=1))
-        await set_setting(s, "classifier", {"enabled": True, "min_confidence": 0.7, "cortex_id": cx.id}, org=1)
+        # modes explícitos: otras pruebas (p. ej. el paso «IA» del onboarding) cambian los modos de la empresa 1
+        from app.settings_store import DEFAULTS
+
+        await set_setting(s, "classifier", {"enabled": True, "min_confidence": 0.7, "cortex_id": cx.id,
+                                            "modes": dict(DEFAULTS["classifier"]["modes"])}, org=1)
 
     conv_id = await _setup_conversation(PHONE)
 
@@ -127,7 +133,8 @@ async def test_classifier_end_to_end(client):
     assert prompt["purpose"] == "classification" and prompt["cortex"] == "Clasificación test"
     assert "Garantías: Garantías, taller y reclamos" in prompt["system"]
     assert "cedula" not in prompt["system"]  # sin ai_extract no se pide al modelo
-    assert prompt["schema"]["properties"]["group"]["enum"] == ["Garantías", ""]
+    enum = prompt["schema"]["properties"]["group"]["enum"]
+    assert "Garantías" in enum and enum[-1] == ""  # otras pruebas también crean grupos en la empresa 1
 
     r = await c.post(f"/api/conversations/{conv_id}/classify", json={"apply": False})
     conv = r.json()["conversation"]

@@ -320,6 +320,13 @@ class SendIn(BaseModel):
     text: str | None = None
     template: TemplateRef | None = Field(default=None, description="Solo WhatsApp: necesaria fuera de la ventana de 24 h")
     agent_id: int | None = Field(default=None, description="Asesor en cuyo nombre se envía (opcional)")
+    # Enrutamiento después del envío (equivalente a assign / pause / groupName / clientOwnerId de Atom)
+    assign: int | str | None = Field(default=None, description="Asignar la conversación a un asesor (id o correo)")
+    group: int | str | None = Field(default=None, description="Grupo de la conversación (id o nombre)")
+    pause_bot: bool | None = Field(default=None, description="true: el bot no responde (queda para asesores)")
+    owner_agent_id: int | None = Field(default=None, description="Dueño del cliente (asesor)")
+    tags: list[str] = Field(default=[], description="Etiquetas a agregar a la conversación")
+    typification: str | None = Field(default=None, description="Tipificación a registrar (sin cerrar)")
 
 
 class SendToPhoneIn(SendIn):
@@ -427,9 +434,11 @@ async def _send(session: AsyncSession, conv: Conversation, body: SendIn) -> dict
             templates.build(tpl, body.template.values)
         except ValueError as e:
             raise ApiError(422, str(e)) from e
+        await _validate_routing(session, conv.organization_id, body)
         await set_actor(session, "api")
         msg = await send_template_message(session, conv, tpl, body.template.values, sender_type="agent",
                                           agent_id=agent.id if agent else None)
+        await _apply_routing(session, conv, body)
         return message_json(msg)
     text_ = (body.text or "").strip()
     if not text_:
@@ -437,9 +446,79 @@ async def _send(session: AsyncSession, conv: Conversation, body: SendIn) -> dict
     if not within_session_window(conv):
         raise ApiError(409, "Fuera de la ventana de mensajes libres: en WhatsApp envía una plantilla (`template`)",
                        code="outside_window")
+    await _validate_routing(session, conv.organization_id, body)
     await set_actor(session, "api")
     sent = await send_text(session, conv, text_, sender_type="agent", agent_id=agent.id if agent else None)
+    await _apply_routing(session, conv, body)
     return message_json(sent[0])
+
+
+async def _resolve_agent_ref(session: AsyncSession, org: int, ref: int | str | None) -> Agent | None:
+    if ref is None or ref == "":
+        return None
+    if isinstance(ref, int) or str(ref).isdigit():
+        return await _agent(session, org, int(ref))
+    a = await session.scalar(select(Agent).where(Agent.organization_id == org, func.lower(Agent.email) == str(ref).lower(),
+                                                 Agent.is_active))
+    if not a:
+        raise ApiError(422, f"Asesor no encontrado: {ref}")
+    return a
+
+
+async def _resolve_group(session: AsyncSession, org: int, ref: int | str | None) -> Group | None:
+    if ref is None or ref == "":
+        return None
+    if isinstance(ref, int) or str(ref).isdigit():
+        g = await session.get(Group, int(ref))
+    else:
+        g = await session.scalar(select(Group).where(Group.organization_id == org, func.lower(Group.name) == str(ref).lower()))
+    if not g or g.organization_id != org:
+        raise ApiError(422, f"Grupo no encontrado: {ref}")
+    return g
+
+
+async def _validate_routing(session: AsyncSession, org: int, body: SendIn) -> None:
+    """Valida las opciones antes de enviar (un error no debe dejar el mensaje enviado a medias)."""
+    from app.service import typification_by_name
+
+    await _resolve_agent_ref(session, org, body.assign)
+    await _resolve_group(session, org, body.group)
+    await _agent(session, org, body.owner_agent_id)
+    if body.typification:
+        typ = await typification_by_name(session, org, body.typification)
+        if not typ or not typ.is_active:
+            raise ApiError(422, "Tipificación inválida")
+
+
+async def _apply_routing(session: AsyncSession, conv: Conversation, body: SendIn) -> None:
+    from app.models import utcnow
+    from app.service import commit_and_broadcast, set_conversation_tags, typification_by_name
+
+    if not (body.assign is not None or body.group is not None or body.pause_bot is not None
+            or body.owner_agent_id is not None or body.tags or body.typification):
+        return
+    org = conv.organization_id
+    await set_actor(session, "api")
+    group = await _resolve_group(session, org, body.group)
+    if group is not None:
+        conv.group_id = group.id
+    agent = await _resolve_agent_ref(session, org, body.assign)
+    if agent is not None:
+        conv.status, conv.assigned_agent_id = "human", agent.id
+    elif body.pause_bot is True and conv.status == "bot":
+        conv.status = "human"  # en cola del grupo, sin respuesta del bot
+    elif body.pause_bot is False and conv.status == "human" and conv.assigned_agent_id is None:
+        conv.status = "bot"
+    if body.owner_agent_id is not None:
+        owner = await _agent(session, org, body.owner_agent_id)
+        conv.contact.owner_agent_id, conv.contact.owner_assigned_at = owner.id, utcnow()
+    if body.tags:
+        await session.refresh(conv, ["tag_links"])
+        await set_conversation_tags(session, conv, [t for t in body.tags if t.strip()][:20], "rule", replace=False)
+    if body.typification:
+        typ = await typification_by_name(session, org, body.typification)
+        conv.typification_id = typ.id
+    await commit_and_broadcast(session, conv)
 
 
 @router.post("/conversations/{conv_id}/messages", summary="Enviar un mensaje en una conversación", status_code=201)

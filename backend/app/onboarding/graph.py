@@ -18,7 +18,8 @@ class GraphError(Exception):
 
 
 def url(path: str) -> str:
-    return f"https://graph.facebook.com/{get_settings().wa_api_version}/{path.lstrip('/')}"
+    s = get_settings()
+    return f"{s.wa_graph_base.rstrip('/')}/{s.wa_api_version}/{path.lstrip('/')}"
 
 
 async def call(method: str, path: str, token: str | None = None, params: dict | None = None,

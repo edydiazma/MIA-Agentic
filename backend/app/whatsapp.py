@@ -45,7 +45,7 @@ class WhatsAppClient:
     def __init__(self, phone_number_id: str, access_token: str | None = None):
         self.phone_number_id = phone_number_id
         self.token = access_token or settings.wa_access_token
-        self.base = f"https://graph.facebook.com/{settings.wa_api_version}"
+        self.base = f"{settings.wa_graph_base.rstrip('/')}/{settings.wa_api_version}"
 
     @property
     def _headers(self) -> dict[str, str]:

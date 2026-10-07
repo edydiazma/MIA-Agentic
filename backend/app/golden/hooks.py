@@ -51,6 +51,24 @@ def on_close(conversation_id: int) -> None:
     _spawn(job(), f"golden-close-{conversation_id}")
 
 
+async def _schedule_pending(limit: int = 200) -> int:
+    """Encola las extracciones de documentos pendientes (más de 30 s: las recientes las atiende on_inbound_media)."""
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from app import jobs
+    from app.db import SessionLocal
+    from app.models import KeyExtraction, utcnow
+
+    async with SessionLocal() as session:
+        rows = (await session.execute(select(KeyExtraction.id, KeyExtraction.organization_id).where(
+            KeyExtraction.status == "pending", KeyExtraction.source_kind.in_(("document", "image")),
+            KeyExtraction.created_at < utcnow() - timedelta(seconds=30))
+            .order_by(KeyExtraction.id).limit(limit))).all()
+    return await jobs.schedule("golden.extract", [({"extraction_id": i}, f"kx:{i}", o) for i, o in rows])
+
+
 async def golden_loop() -> None:
     from app.golden.extract import process_pending
     from app.golden.opportunities import run_all
@@ -58,7 +76,12 @@ async def golden_loop() -> None:
     last_opps = 0.0
     while True:
         try:
-            await process_pending()
+            from app import jobs
+
+            if jobs.enabled():  # los workers de la cola leen los documentos en paralelo (cola "media")
+                await _schedule_pending()
+            else:
+                await process_pending()
             if time.monotonic() - last_opps >= OPPORTUNITIES_EVERY_S:
                 last_opps = time.monotonic()
                 created = await run_all()

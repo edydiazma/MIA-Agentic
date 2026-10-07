@@ -323,12 +323,24 @@ async def enrich_pending(limit: int = 100) -> int:
     return len(ids)
 
 
+async def schedule_pending(limit: int = 500) -> int:
+    from app import jobs
+
+    async with SessionLocal() as session:
+        rows = (await session.execute(select(Attribution.id, Attribution.organization_id).where(
+            Attribution.enrichment_status == "pending", Attribution.created_at <= utcnow() - timedelta(minutes=1))
+            .order_by(Attribution.created_at).limit(limit))).all()
+    return await jobs.schedule("ads.enrich", [({"attribution_id": i}, f"enrich:{i}", o) for i, o in rows])
+
+
 async def enrichment_loop() -> None:
     """Registrar en main.py (lifespan): cada 5 minutos."""
     while True:
         await asyncio.sleep(300)
         try:
-            done = await enrich_pending()
+            from app import jobs
+
+            done = await schedule_pending() if jobs.enabled() else await enrich_pending()
             if done:
                 log.info("Enriquecimiento: %s atribuciones procesadas", done)
         except Exception:

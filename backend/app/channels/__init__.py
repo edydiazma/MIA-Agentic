@@ -16,8 +16,9 @@ from app.models import Channel, ContactIdentity, Conversation
 
 WHATSAPP = "whatsapp_cloud"
 META_PROVIDERS = ("messenger", "instagram")
-PROVIDERS = (WHATSAPP, "messenger", "instagram", "webchat")
-LABELS = {WHATSAPP: "WhatsApp", "messenger": "Messenger", "instagram": "Instagram", "webchat": "Chat web"}
+PROVIDERS = (WHATSAPP, "messenger", "instagram", "webchat", "email")
+LABELS = {WHATSAPP: "WhatsApp", "messenger": "Messenger", "instagram": "Instagram", "webchat": "Chat web",
+          "email": "Correo"}
 
 # Ventana para responder libremente después del último mensaje del cliente.
 # Messenger e Instagram: 24 h estándar y hasta 7 días con la etiqueta HUMAN_AGENT (solo respuestas de personas).
@@ -30,8 +31,8 @@ class ChannelError(Exception):
 
 
 def window_for(provider: str, human: bool) -> timedelta | None:
-    """Ventana de respuesta libre; None = sin límite (chat web)."""
-    if provider == "webchat":
+    """Ventana de respuesta libre; None = sin límite (chat web y correo)."""
+    if provider in ("webchat", "email"):
         return None
     if provider in META_PROVIDERS and human:
         return HUMAN_AGENT_WINDOW
@@ -68,4 +69,8 @@ async def channel_client(session: AsyncSession, channel: Channel, conv: Conversa
         from app.channels.webchat import WebchatClient
 
         return WebchatClient(channel, conv)
+    if channel.provider == "email":
+        from app.channels.email import EmailClient
+
+        return EmailClient(session, channel, conv, recipient)
     raise ChannelError(f"Proveedor de canal desconocido: {channel.provider}")

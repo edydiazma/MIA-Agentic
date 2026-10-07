@@ -27,7 +27,9 @@ env = get_settings()
 
 WEBCHAT_DEFAULTS = {"title": "¿Te ayudamos?", "greeting": "¡Hola! Escríbenos y te respondemos aquí mismo.",
                     "color": "#0f766e", "position": "right", "allowed_domains": [],
-                    "prechat": {"enabled": False, "require_email": False}}
+                    "prechat": {"enabled": False, "require_email": False}, "open_selector": None,
+                    "auto_open_s": None, "initial_message": None, "clear_on_open": False, "avatar_url": None,
+                    "theme": "light", "launcher_text": None, "header_text_color": "#ffffff"}
 
 
 class MetaChannelIn(BaseModel):
@@ -77,6 +79,28 @@ def _clean_settings(raw: dict, current: dict | None = None) -> dict:
                           "require_email": bool(raw["prechat"].get("require_email"))}
     if not str(out.get("color", "")).startswith("#"):
         out["color"] = WEBCHAT_DEFAULTS["color"]
+    # Opciones avanzadas del widget (§19.1)
+    if "open_selector" in raw:  # abrir el chat desde botones propios del sitio (selector CSS)
+        sel = str(raw.get("open_selector") or "").strip()[:200]
+        out["open_selector"] = sel if sel and not any(c in sel for c in "{}<>;") else None
+    if "auto_open_s" in raw:
+        try:
+            out["auto_open_s"] = max(0, min(int(raw.get("auto_open_s") or 0), 600)) or None
+        except (TypeError, ValueError):
+            out["auto_open_s"] = None
+    if "initial_message" in raw:  # se envía al bot al abrir por primera vez
+        out["initial_message"] = str(raw.get("initial_message") or "").strip()[:500] or None
+    if "clear_on_open" in raw:
+        out["clear_on_open"] = bool(raw.get("clear_on_open"))
+    if "avatar_url" in raw:
+        url = str(raw.get("avatar_url") or "").strip()[:500]
+        out["avatar_url"] = url if url.startswith("https://") else None
+    if raw.get("theme") in ("light", "dark", "auto"):
+        out["theme"] = raw["theme"]
+    if "launcher_text" in raw:
+        out["launcher_text"] = str(raw.get("launcher_text") or "").strip()[:40] or None
+    if isinstance(raw.get("header_text_color"), str) and raw["header_text_color"].startswith("#"):
+        out["header_text_color"] = raw["header_text_color"][:9]
     return out
 
 

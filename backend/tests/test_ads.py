@@ -29,7 +29,7 @@ from app.models import (
     utcnow,
 )
 from app.secrets_vault import put_secret
-from tests.conftest import settle, text
+from tests.conftest import settle, text, unique_phone
 
 USER_URL = ("https://www.facebook.com/story.php?story_fbid=1060896133661462&id=100092232559076"
             "&post_id=100092232559076_1060896133661462")
@@ -143,8 +143,8 @@ async def test_post_referral_resolves_to_specific_ad(client):
     c = client
     await _connect("meta", settings={"ad_account_id": "act_111"})
     try:
-        phone = "573170000001"
-        await c.post("/webhooks/whatsapp", json=text(phone, "ads.1", "Hola, quiero la Isuzu Estacas", referral={
+        phone = unique_phone("57317")
+        await c.post("/webhooks/whatsapp", json=text(phone, f"ads.{phone}.1", "Hola, quiero la Isuzu Estacas", referral={
             "source_type": "post", "source_id": "1060896133661462", "source_url": USER_URL,
             "headline": "Isuzu Estacas", "body": "Precio de lanzamiento", "media_type": "image",
             "image_url": "https://cdn.example/img.jpg", "ctwa_clid": "CLID-POST"}))
@@ -175,8 +175,8 @@ async def test_post_referral_resolves_to_specific_ad(client):
 
         # Otro cliente desde la misma publicación: cruce local, sin llamar a Meta
         calls.clear()
-        phone2 = "573170000002"
-        await c.post("/webhooks/whatsapp", json=text(phone2, "ads.2", "Hola, info Isuzu", referral={
+        phone2 = unique_phone("57317")
+        await c.post("/webhooks/whatsapp", json=text(phone2, f"ads.{phone2}.2", "Hola, info Isuzu", referral={
             "source_type": "post", "source_id": "1060896133661462", "source_url": USER_URL}))
         await settle()
         a2 = await _attr(phone2)
@@ -185,8 +185,8 @@ async def test_post_referral_resolves_to_specific_ad(client):
 
         # Publicación orgánica (ningún anuncio la promocionó): queda "Publicación"
         routes["act_111/ads"] = httpx.Response(200, json={"data": []})
-        phone3 = "573170000003"
-        await c.post("/webhooks/whatsapp", json=text(phone3, "ads.3", "Hola", referral={
+        phone3 = unique_phone("57317")
+        await c.post("/webhooks/whatsapp", json=text(phone3, f"ads.{phone3}.3", "Hola", referral={
             "source_type": "post", "source_id": "999", "source_url":
                 "https://www.facebook.com/story.php?story_fbid=999&id=100092232559076"}))
         await settle()
@@ -202,8 +202,8 @@ async def test_ad_creative_and_first_vs_last_source(client):
     c = client
     await _connect("meta", settings={"ad_account_id": "111"})
     try:
-        phone = "573170000010"
-        await c.post("/webhooks/whatsapp", json=text(phone, "ads.10", "Hola, me interesa", referral={
+        phone = unique_phone("57317")
+        await c.post("/webhooks/whatsapp", json=text(phone, f"ads.{phone}.10", "Hola, me interesa", referral={
             "source_type": "ad", "source_id": "AD-CR-1", "headline": "Promo CX-5", "ctwa_clid": "C1"}))
         await settle()
         routes["/AD-CR-1"] = httpx.Response(200, json=_meta_ad("AD-CR-1", "PAGE_1", "Mazda Q4", "CX-5 carrusel"))
@@ -215,7 +215,7 @@ async def test_ad_creative_and_first_vs_last_source(client):
         assert a.ad_headline == "Promo CX-5"  # el del referral manda sobre el del creativo
 
         # El mismo cliente vuelve por otro anuncio: el primer toque se conserva, el último cambia
-        await c.post("/webhooks/whatsapp", json=text(phone, "ads.11", "Hola otra vez", referral={
+        await c.post("/webhooks/whatsapp", json=text(phone, f"ads.{phone}.11", "Hola otra vez", referral={
             "source_type": "ad", "source_id": "AD-CR-2", "ctwa_clid": "C2"}))
         await settle()
         k = await _contact(phone)
@@ -278,18 +278,18 @@ async def test_spend_sync_meta_and_google_idempotent(client, monkeypatch):
 
 
 async def test_ads_report_math_and_isolation(client):
-    org = 9301
+    org = 9351  # id propio: 9301 es de test_security
     async with SessionLocal() as s:
         if not await s.get(Organization, org):
             s.add(Organization(id=org, name="Org anuncios", slug="org-anuncios", timezone="America/Bogota"))
             await s.flush()
-            s.add(Agent(organization_id=org, email="ads9301@test.com", name="Ads", role="admin",
-                        password_hash=hash_password("secret9301")))
-            ch = Channel(organization_id=org, name="WA ads", phone_number_id="PN-ADS-9301")
+            s.add(Agent(organization_id=org, email="ads9351@test.com", name="Ads", role="admin",
+                        password_hash=hash_password("secret9351")))
+            ch = Channel(organization_id=org, name="WA ads", phone_number_id="PN-ADS-9351")
             venta = Typification(organization_id=org, name="Venta", is_success=True, position=1)
             s.add_all([ch, venta])
             await s.flush()
-            k = Contact(organization_id=org, wa_id="573179301001", name="Cliente anuncio")
+            k = Contact(organization_id=org, wa_id="573179351001", name="Cliente anuncio")
             s.add(k)
             await s.flush()
             now = utcnow()
@@ -312,7 +312,7 @@ async def test_ads_report_math_and_isolation(client):
             await s.commit()
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c2:
-        tok = (await c2.post("/api/auth/login", json={"email": "ads9301@test.com", "password": "secret9301"})).json()
+        tok = (await c2.post("/api/auth/login", json={"email": "ads9351@test.com", "password": "secret9351"})).json()
         c2.headers["Authorization"] = f"Bearer {tok['access_token']}"
         r = await c2.get("/api/reports/ads")
         assert r.status_code == 200, r.text
@@ -334,7 +334,7 @@ async def test_ads_report_math_and_isolation(client):
         assert (await c2.get("/api/ads/meta/NO-EXISTE")).status_code == 404
         assert (await c2.get("/api/ads/tiktok/AD-R-1")).status_code == 404
 
-    # Aislamiento: la empresa 1 no ve los anuncios de la 9301
+    # Aislamiento: la empresa 1 no ve los anuncios de la 9351
     r = await client.get("/api/reports/ads")
     assert "AD-R-1" not in {a["ad_key"] for a in r.json()["ads"]}
     assert (await client.get("/api/ads/meta/AD-R-1")).status_code == 404

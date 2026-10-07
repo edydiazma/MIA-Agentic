@@ -90,6 +90,10 @@ async def handle_calls_webhook(value: dict) -> None:
         event = call.get("event")
         if event == "connect" and call.get("direction", "USER_INITIATED") == "USER_INITIATED":
             await on_connect(phone_number_id, call, profiles.get(call.get("from")))
+        elif event == "connect" and call.get("direction") == "BUSINESS_INITIATED":
+            from app.voice.outbound import on_business_connect  # llamada iniciada por el asesor (§19.1)
+
+            await on_business_connect(call)
         elif event == "terminate":
             await on_terminate(call, value.get("errors"))
         else:
@@ -98,6 +102,12 @@ async def handle_calls_webhook(value: dict) -> None:
                 if c:
                     await log_event(session, c.id, event or "status", _strip_sdp(call))
                     await session.commit()
+    # Estados de llamadas iniciadas por la empresa: RINGING / ACCEPTED / REJECTED
+    for status in value.get("statuses") or []:
+        if status.get("type") == "call" or str(status.get("id", "")).startswith("wacid"):
+            from app.voice.outbound import on_call_status
+
+            await on_call_status(status)
 
 
 def _strip_sdp(call: dict) -> dict:
@@ -160,9 +170,9 @@ async def on_connect(phone_number_id: str, payload: dict, profile_name: str | No
         if voice_agent and voice_agent.enabled:
             call.voice_agent_id = voice_agent.id
             await session.commit()
-            from app.voice.agent_runtime import start_voice_agent
+            from app.voice import nodes
 
-            spawn(start_voice_agent(call.id, sdp_offer))
+            await nodes.start(session, call, sdp_offer)  # en este proceso o en un nodo de voz (VOICE_DISPATCH)
             return call
 
         targets = await eligible_agents(session, org, None)
@@ -238,9 +248,9 @@ async def hangup(session: AsyncSession, call: Call, reason: str = "Colgada desde
         await (await calling_client(session, channel)).action(call.wa_call_id, "terminate")
     except Exception as e:
         log.warning("terminate falló para %s: %s", call.wa_call_id, e)
-    from app.voice.session import registry
+    from app.voice import nodes
 
-    await registry.stop(call.id)
+    await nodes.stop(session, call)
     if call.status in ACTIVE:
         await finish(session, call, "ended", reason)
     return call
@@ -253,9 +263,9 @@ async def on_terminate(payload: dict, errors: list | None) -> None:
         if not call:
             return
         await log_event(session, call.id, "terminate", {k: v for k, v in payload.items() if k != "session"})
-        from app.voice.session import registry
+        from app.voice import nodes
 
-        await registry.stop(call.id)
+        await nodes.stop(session, call)
         status_values = payload.get("status") or []
         status_values = status_values if isinstance(status_values, list) else [status_values]
         if call.status not in ACTIVE:

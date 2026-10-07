@@ -35,6 +35,8 @@ ROUTERS = ["webhook", "auth", "inbox", "bots", "knowledge", "contacts", "campaig
            "quality", "agent_tests",
            # Fase 4: omnicanal (Messenger, Instagram, chat web)
            "omnichannel", "webchat", "channel_reports", "meta_webhook",
+           # Brechas Atom (§19.1): correo, botón flotante de WhatsApp
+           "email_inbound", "wa_widgets",
            # Asistente de onboarding y configuración automática
            "onboarding", "invitations",
            # Cliente 360: productos por interacción
@@ -52,7 +54,13 @@ ROUTERS = ["webhook", "auth", "inbox", "bots", "knowledge", "contacts", "campaig
            # Contact center: estados de asesor, horarios por grupo, enrutamiento y dueño del cliente (§18.1)
            "agent_status", "business_hours", "group_routing",
            # Seguridad: 2FA, contraseñas, SSO, roles y permisos, auditoría de acceso (§18.4)
-           "security", "sso_public", "roles"]
+           "security", "sso_public", "roles",
+           # Copiloto de IA (§19.3)
+           "copilot", "assistant",
+           # Escala: cola de trabajos (admin), nodos de voz (interno), llamadas salientes, token de Supabase Realtime
+           "ops_jobs", "voice_internal", "outbound_calls", "realtime_token",
+           # Diagnóstico de integraciones para salir a producción (§20)
+           "preflight"]
 
 
 async def bootstrap(org: int | None = None) -> None:
@@ -128,10 +136,12 @@ LOOPS = [
     "app.ad_enrichment:ads_catalog_loop",  # anuncios de Meta (cruce publicación → anuncio), cada 6 h
     "app.ads.spend:spend_loop",  # inversión por anuncio y día (Meta Insights, Google Ads), cada hora
     "app.golden.hooks:golden_loop",  # documentos pendientes (1 min) y oportunidades por vehículo (6 h)
+    "app.channels.email:imap_loop",  # buzones de correo por IMAP (cada minuto)
     "app.recovery:recovery_loop",  # recuperación por inactividad del agente de IA (intentos + fin)
     "app.notifications:followup_reminder_loop",  # avisa seguimientos / llamadas vencidas (una sola vez)
     "app.automations:sla_loop",  # reglas de SLA con temporizador (una vez por ciclo)
     "app.statuses:sessions_loop",  # sesiones sin latido → desconectado
+    "app.voice.nodes:voice_watchdog_loop",  # llamadas de un nodo de voz caído → fallidas + alerta (§19.2)
 ]
 
 
@@ -151,12 +161,13 @@ def _loop_name(path: str) -> str:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """ROLE=api: HTTP + WebSocket + LISTEN. ROLE=worker: tareas de fondo (una líder por tarea en el clúster).
-    ROLE=all: ambos (una sola réplica o desarrollo)."""
+    """ROLE=api: HTTP + WebSocket + LISTEN. ROLE=worker: tareas de fondo (una líder por tarea en el clúster) y
+    consumidores de la cola de trabajos. ROLE=voice: solo sesiones de medios de llamadas (señalización interna desde
+    la API). ROLE=all: todo (una sola réplica o desarrollo)."""
     if settings.jwt_secret == "change-me":
         log.warning("JWT_SECRET tiene el valor por defecto: cámbialo antes de exponer el servidor")
-    if settings.role not in ("api", "worker", "all"):
-        raise RuntimeError(f"ROLE inválido: {settings.role} (api | worker | all)")
+    if settings.role not in ("api", "worker", "voice", "all"):
+        raise RuntimeError(f"ROLE inválido: {settings.role} (api | worker | voice | all)")
     await check_schema()
     if settings.role in ("api", "all"):
         await startup_bootstrap()
@@ -167,6 +178,10 @@ async def lifespan(_: FastAPI):
         if not await _has_pg_cron():
             loops += [("reporting", reporting_loop), ("ops_cleanup", ops_cleanup_loop)]
         tasks += [asyncio.create_task(leader.run_as_leader(name, fn)) for name, fn in loops]
+        if settings.jobs_enabled:  # consumidores de la cola: todos los workers en paralelo (sin líder)
+            from app import jobs
+
+            tasks.append(asyncio.create_task(jobs.run_workers()))
     log.info("Proceso iniciado: role=%s realtime=%s versión=%s", settings.role, hub.mode, settings.app_version)
     yield
     for t in tasks:

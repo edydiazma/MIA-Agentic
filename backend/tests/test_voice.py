@@ -180,6 +180,13 @@ async def test_voice_agent_unavailable_falls_back_to_humans(client, monkeypatch)
     c = client
     monkeypatch.setattr(agent_runtime, "runtime_available", lambda: False)
     monkeypatch.setattr(signaling, "RING_TIMEOUT_S", 0.2)
+    # Canal con llamadas y agente de voz asignado (no depende del orden de las pruebas)
+    bots = (await c.get("/api/bots")).json()
+    va = await c.post("/api/voice/agents", json={"name": "Recepción respaldo", "ai_agent_id": bots[0]["id"],
+                                                 "greeting": "Hola"})
+    assert va.status_code == 200, va.text
+    await c.put(f"/api/voice/channels/{await _channel_id()}", json={
+        "calling_enabled": True, "voice_agent_id": va.json()["id"], "sync_meta": False, "calling_hours": None})
     await c.post("/webhooks/whatsapp", json=connect("wacid.fallback", "571550000004"))
     await settle(0.8)
     assert any(e == "call.incoming" and d["wa_call_id"] == "wacid.fallback" for e, d in events)
@@ -201,8 +208,9 @@ async def test_outside_hours_and_stats(client):
     call = await _call("wacid.night")
     assert call.status == "rejected" and "horario" in call.end_reason
     stats = (await c.get("/api/calls/stats")).json()
-    assert stats["total"] >= 4 and stats["by_status"].get("rejected", 0) >= 2
+    # Solo lo que crea esta prueba (las demás del archivo pueden correr antes o después)
+    assert stats["total"] >= 1 and stats["by_status"].get("rejected", 0) >= 1
     assert stats["minutes_month"]["metric"] == "voice_minutes_month"
     listing = (await c.get("/api/calls", params={"status": "rejected"})).json()
-    assert listing["total"] >= 2
+    assert listing["total"] >= 1
     await c.put(f"/api/voice/channels/{await _channel_id()}", json={"calling_enabled": False, "sync_meta": False})

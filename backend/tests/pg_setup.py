@@ -49,6 +49,10 @@ def ensure_test_database() -> str:
     # Varias pruebas crean empresas con ids fijos (8, 9, 9101…): los ids automáticos arrancan lejos de ellos
     _run(str(PGB / "psql"), *base, "-d", DB, "-qc",
          "select setval(pg_get_serial_sequence('public.organizations', 'id'), 100000)")
+    # La empresa 1 (Enterprise) es compartida por todas las pruebas: sin tope de números para que crear canales en
+    # una prueba no agote el cupo de otra (los límites de planes se prueban con Team en test_saas)
+    _run(str(PGB / "psql"), *base, "-d", DB, "-qc",
+         """update public.plans set limits = limits || '{"channels": null}'::jsonb where key = 'enterprise'""")
     return f"postgresql+asyncpg://postgres@localhost:{PORT}/{DB}"
 
 

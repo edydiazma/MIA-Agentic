@@ -5,7 +5,7 @@ seguimiento, base de conocimiento y reportes."""
 from datetime import UTC, datetime, timedelta
 
 from app.realtime import hub
-from tests.conftest import WA, FakeChat, settle, text
+from tests.conftest import WA, FakeChat, eventually, settle, text
 
 
 async def _conv(c, phone):
@@ -129,10 +129,13 @@ async def test_statuses_billing_optout_and_meta_alerts(client):
     await settle(0.1)
     # El Centro de Control cuenta la copia sincronizada de plantillas (wa_templates), no consulta a Meta en vivo
     assert len((await c.get("/api/templates")).json()) == 2
+    async def _titles():
+        return [a["title"] for a in (await c.get("/api/control-center")).json()["alerts"]]
+
+    assert await eventually(lambda: _titles(), lambda t: "Plantilla «promo» paused" in t)
     cc = (await c.get("/api/control-center")).json()
     titles = [a["title"] for a in cc["alerts"]]
     assert "Un contacto pidió dejar de recibir marketing" in titles
-    assert "Plantilla «promo» paused" in titles
     assert cc["meta_summary"]["opt_out_7d"] >= 1
     assert cc["meta_summary"]["templates_total"] == 2
 
@@ -189,7 +192,7 @@ async def test_appointments_by_bot_and_followups(client):
     assert f["overdue"] is True
     assert (await c.get("/api/control-center")).json()["me"]["followups_due"] >= 1
     await c.put(f"/api/followups/{f['id']}", json={"done": True})
-    assert (await c.get("/api/followups")).json() == []
+    assert all(x["id"] != f["id"] for x in (await c.get("/api/followups")).json())  # otras pruebas también crean
 
 
 async def test_knowledge_settings_and_reports(client):
@@ -207,7 +210,7 @@ async def test_knowledge_settings_and_reports(client):
     assert (await c.put("/api/settings/company", json={"timezone": "Marte/Base"})).status_code == 422
     assert (await c.put("/api/settings/company", json={"name": "Automercol"})).json()["name"] == "Automercol"
     await c.post("/api/quick-replies", json={"shortcut": "/saludo", "text": "¡Hola! Soy tu asesor."})
-    assert (await c.get("/api/quick-replies")).json()[0]["shortcut"] == "saludo"
+    assert any(q["shortcut"] == "saludo" for q in (await c.get("/api/quick-replies")).json())
 
     for path in ("/api/reports/realtime", "/api/reports/general", "/api/reports/stages", "/api/reports/inbound",
                  "/api/reports/outbound", "/api/reports/agents", "/api/reports/billing", "/api/integrations",

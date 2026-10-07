@@ -26,7 +26,7 @@ ATTACHMENT_TYPES = {"image": "image", "video": "video", "audio": "audio", "docum
 
 
 def graph_base() -> str:
-    return f"https://graph.facebook.com/{settings.wa_api_version}"
+    return f"{settings.wa_graph_base.rstrip('/')}/{settings.wa_api_version}"
 
 
 def http_client(timeout: float = 30) -> httpx.AsyncClient:

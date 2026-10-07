@@ -259,8 +259,12 @@ async def _apply_contact_maps(session: AsyncSession, contact: Contact, conv: Con
     done: dict = {}
     fields = None
     for target, (_p, value) in parsed.by_target.items():
-        if target == "contact.name" and value and not contact.name:
-            contact.name = str(value)
+        if target == "contact.name" and value:
+            if not contact.name:
+                contact.name = str(value)
+            # El nombre también alimenta el registro maestro: nombres y apellidos por separado (§15)
+            if await _golden_name(session, contact, str(value), conv):
+                done.setdefault("keys", []).extend(["first_name", "last_name"])
         elif target == "contact.email" and value:
             contact.email = str(value)
         elif target.startswith("field:"):
@@ -280,6 +284,21 @@ async def _apply_contact_maps(session: AsyncSession, contact: Contact, conv: Con
     if vehicle.get("plate") or vehicle.get("vin"):
         done["vehicle_id"] = await _vehicle(session, contact, vehicle, conv)
     return done
+
+
+async def _golden_name(session: AsyncSession, contact: Contact, full_name: str, conv) -> bool:
+    """Parte el nombre completo en nombres / apellidos (convención hispana de dos apellidos) y los registra."""
+    try:
+        from app.golden.normalize import split_full_name
+    except ImportError:
+        return False
+    first, last = split_full_name(full_name)
+    ok = False
+    if first:
+        ok = await _golden_key(session, contact, "first_name", first, conv) or ok
+    if last:
+        ok = await _golden_key(session, contact, "last_name", last, conv) or ok
+    return ok
 
 
 async def _golden_key(session: AsyncSession, contact: Contact, key_type: str, value, conv) -> bool:

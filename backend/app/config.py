@@ -15,12 +15,27 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
 
     # Escala y operación (docs/data-model.md §12.1)
-    role: str = "all"  # api (HTTP + WebSocket) | worker (tareas de fondo) | all (ambos, una sola réplica)
+    role: str = "all"  # api (HTTP + WebSocket) | worker (tareas de fondo) | voice (medios de llamadas) | all
     realtime_mode: str = "pg"  # pg: eventos entre réplicas por LISTEN/NOTIFY | local: solo este proceso
     metrics_token: str = ""  # si se define, /metrics exige "Authorization: Bearer <token>"
     log_format: str = "text"  # text | json
     sentry_dsn: str = ""
     app_version: str = "dev"
+    # Arquitectura de escala (docs/data-model.md §19.2)
+    database_url_reports: str = ""  # réplica de lectura para los reportes (vacío = la principal)
+    jobs_enabled: bool = True  # cola de trabajos en Postgres (la atienden los procesos worker/all)
+    jobs_concurrency: str = "default=4,ai=2,crm=2,conversions=2,media=2,outbound=4"  # cola=trabajos simultáneos
+    jobs_lease_seconds: int = 300
+    # Voz como servicio aparte: local = la sesión de medios corre en este proceso (una réplica, desarrollo);
+    # remote = la API elige un nodo ROLE=voice y le reenvía la señalización por HTTP interno
+    voice_dispatch: str = "local"
+    voice_internal_token: str = ""  # secreto compartido API ↔ nodos de voz (cabecera X-Voice-Token)
+    voice_node_url: str = ""  # URL interna de ESTE nodo de voz (ej. http://10.0.1.12:8000)
+    voice_capacity: int = 20  # sesiones de medios simultáneas por nodo de voz
+    # Panel en Supabase Realtime: ws = solo WebSocket propio | supabase = solo Supabase | both = ambos
+    realtime_transport: str = "ws"
+    supabase_jwt_secret: str = ""  # secreto JWT (HS256, "legacy") para emitir el token de Realtime del asesor
+    realtime_token_minutes: int = 60
 
     # Auth
     jwt_secret: str = "change-me"
@@ -30,6 +45,10 @@ class Settings(BaseSettings):
 
     # WhatsApp Cloud API (canal por defecto, se siembra en la BD al arrancar)
     wa_api_version: str = "v23.0"
+    # Base de la Graph API (pruebas de carga: apunta a loadtest/fake_meta.py para no llamar a Meta)
+    wa_graph_base: str = "https://graph.facebook.com"
+    # Optimización de costos: ventana para agrupar textos seguidos del bot en un solo mensaje (app/bot_outbox.py)
+    bot_merge_window_s: float = 2.0
     wa_verify_token: str = "verify-me"
     wa_app_secret: str = ""  # vacío = no se valida la firma (solo dev)
     wa_access_token: str = ""
@@ -64,6 +83,8 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from: str = ""  # "WA Agent <no-reply@tuempresa.com>"
     smtp_starttls: bool = True
+    # Canal de correo: dominio de entrada del proveedor (alias@dominio reenvía al webhook /webhooks/email/{alias})
+    email_inbound_domain: str = ""
 
     # CRM
     hubspot_client_id: str = ""

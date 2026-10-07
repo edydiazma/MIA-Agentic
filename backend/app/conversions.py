@@ -42,7 +42,8 @@ from app.secrets_vault import get_secret, put_secret
 log = logging.getLogger(__name__)
 GOOGLE_ADS_API = "https://googleads.googleapis.com/v20"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
-META_GRAPH = "https://graph.facebook.com/v23.0"
+# Misma base y versión que WhatsApp (WA_GRAPH_BASE permite apuntar a un mock en pruebas de carga)
+META_GRAPH = f"{get_settings().wa_graph_base.rstrip('/')}/{get_settings().wa_api_version}"
 BACKOFF_S = [60, 300, 1800, 7200, 43200]  # 1 min, 5 min, 30 min, 2 h, 12 h
 MAX_ATTEMPTS = 6
 CURSOR_KEY = "conversions_cursor"
@@ -432,13 +433,30 @@ async def upload_due(limit: int = 100) -> int:
     return len(ups)
 
 
+async def schedule_due(limit: int = 500) -> int:
+    from app import jobs
+
+    async with SessionLocal() as session:
+        rows = (await session.execute(select(ConversionUpload.id, ConversionEvent.organization_id)
+                                      .join(ConversionEvent, ConversionEvent.id == ConversionUpload.event_id)
+                                      .where(ConversionUpload.status == "pending",
+                                             ConversionUpload.next_attempt_at <= utcnow())
+                                      .order_by(ConversionUpload.next_attempt_at).limit(limit))).all()
+    return await jobs.schedule("conversions.upload", [({"upload_id": i}, f"cu:{i}", o) for i, o in rows])
+
+
 async def conversions_loop() -> None:
     """Registrar en main.py (lifespan): detecta conversiones y sube envíos cada 60 s."""
     while True:
         await asyncio.sleep(60)
         try:
             created = await scan_all()
-            sent = await upload_due()
+            from app import jobs
+
+            if jobs.enabled():  # cada envío es un trabajo (cola "conversions"); el backoff lo lleva el envío
+                sent = await schedule_due()
+            else:
+                sent = await upload_due()
             if created or sent:
                 log.info("Conversiones: %s nuevas, %s envíos procesados", created, sent)
         except Exception:

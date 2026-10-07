@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import appointments, storage
+from app import appointments, bot_outbox, storage
 from app.ai import router
 from app.ai.base import AgentRequest, DocumentPart, ImagePart, Part, TextPart, ToolSpec, Turn
 from app.config import get_settings
@@ -28,7 +28,7 @@ from app.models import (
     utcnow,
 )
 from app.realtime import hub
-from app.service import handoff, record_message, send_text, wa_client
+from app.service import handoff, record_message, wa_client
 from app.settings_store import get_setting
 
 settings = get_settings()
@@ -357,12 +357,16 @@ async def run_agent(conversation_id: int) -> None:
         await session.refresh(conv)
         if conv.status != "bot":
             return
+        # Optimización de costos: los textos del bot seguidos (respuesta + aviso de transferencia, o dos respuestas a
+        # ráfagas del cliente) salen como un solo mensaje facturable (app/bot_outbox.py)
+        merge = bool(getattr(agent, "cost_optimization", False))
         if result and result.text:
             await set_actor(session, "bot")
-            await send_text(session, conv, result.text, sender_type="bot", ai_agent_id=agent.id)
+            await bot_outbox.queue_text(session, conv, result.text, ai_agent_id=agent.id, merge=merge)
         if handoff_req:
             if not (result and result.text):
-                await send_text(session, conv, agent.handoff_message, sender_type="bot", ai_agent_id=agent.id)
+                await bot_outbox.queue_text(session, conv, agent.handoff_message, ai_agent_id=agent.id, merge=merge)
+            await bot_outbox.flush(conv.id)  # el texto va antes de la transferencia
             await handoff(session, conv, str(handoff_req["reason"]), handoff_req.get("group_id"), actor="bot")
 
 

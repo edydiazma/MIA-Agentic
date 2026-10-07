@@ -370,7 +370,15 @@ async def start_voice_agent(call_id: int, sdp_offer: str | None) -> None:
                 log.exception("El agente de voz no pudo contestar la llamada %s", call_id)
                 fallback_reason = f"Error del agente de voz: {type(e).__name__}"
                 await registry.stop(call.id)
-        await signaling.log_event(session, call.id, "voice_agent_fallback", {"reason": fallback_reason})
+    await ring_agents_instead(call_id, sdp_offer, fallback_reason)
+
+
+async def ring_agents_instead(call_id: int, sdp_offer: str | None, reason: str) -> None:
+    """El agente de voz no puede contestar (sin dependencias, sin nodo de voz, error): suena en los asesores."""
+    async with SessionLocal() as session:
+        call = await session.get(Call, call_id)
+        va = await session.get(VoiceAgent, call.voice_agent_id) if call.voice_agent_id else None
+        await signaling.log_event(session, call.id, "voice_agent_fallback", {"reason": reason})
         await session.commit()
         await session.refresh(call)
         await session.refresh(call, ["contact"])

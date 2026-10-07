@@ -562,6 +562,62 @@ Closes the Atom gap backlog (`docs/roadmap-atom-gaps.md`).
 - `auth_events` (**partitioned**, 12 months): login ok/failed, lock, MFA, password changes/resets, SSO, IP blocked,
   role changes, revoked sessions.
 
+## 19. Remaining Atom gaps, scale-out, AI copilot (migrations 30–32)
+
+### 19.1 Remaining Atom gaps (30)
+- **Email channel**: `channels.provider = email` (`external_id` = mailbox address; `settings`: inbound mode
+  `forward | imap | provider`, unique forwarding alias, SMTP/IMAP hosts with secrets in Vault, signature, default
+  group, auto-reply); `contact_identities.provider = email`; `email_threads` maps `Message-ID` (and
+  `In-Reply-To` / `References`) to the conversation; headers in `messages.metadata`, HTML body in Storage,
+  `messages.type = email`; raw inbound in `inbound_events` (source `email`).
+- **Agent-initiated WhatsApp calls**: `call_permissions` (request → granted / denied / expired / revoked,
+  permanent vs. temporary, expiry); `calls.initiated_by_agent_id` (`calls.direction = outbound` already existed).
+- **Embeddable WhatsApp floating button** `wa_widgets` (`/b/{key}.js`): single or multi-agent card (name, role, photo,
+  channel, trigger link, prefilled text, hours), button look, page rules, allowed domains, default `link_id` for
+  attribution, impression/click counters.
+- Web chat advanced options live in `channels.settings` (open from a CSS selector, auto-open delay, initial message
+  to the bot, clear on open, avatar, themes); `/v1/messages` routing options need no schema.
+- Implemented without schema changes beyond migration 30: inbound providers Postmark / SendGrid Inbound Parse /
+  Mailgun Routes on `/webhooks/email/{alias}` (alias = random per channel in `channels.settings.inbound_alias`;
+  optional Mailgun signature), IMAP polling stores `settings.imap_last_uid`; SMTP/IMAP/Mailgun secrets in Vault
+  (`settings.*.password_secret_id`, `mailgun_key_secret_id`); email contacts link to an existing contact by
+  `contacts.email` or golden `email` key before creating one.
+
+### 19.2 Scale-out (31)
+- **Voice service**: worker role `voice` with `capacity`, `active_load`, internal `endpoint`; `calls.media_node_id`
+  pins a call's media session to one voice node, so API replicas route signaling to the owner node.
+- **Job queue** `jobs` (Postgres, `FOR UPDATE SKIP LOCKED` via `jobs_claim(queue, worker, limit, lease_s)`): queue,
+  kind, payload, `dedupe_key` (unique while queued/running), priority, `run_at`, attempts / max attempts, lease
+  (`locked_by`, `locked_until`), result / error; `jobs_requeue_stuck()` (expired leases → queued or `dead`) and
+  cleanup every 5 min (pg_cron).
+- **Panel on Supabase Realtime**: the backend mints a short-lived Realtime JWT per agent (`agents.realtime_subject`,
+  org in `app_metadata`). Migration 31b (`20261014000600_realtime_subject.sql`): unique `realtime_subject`,
+  `private.current_org_id()` also resolves it, new `private.current_agent_id()`, and the `realtime.messages` policy
+  allows `org:{id}:…` topics but `…:agent:{agent_id}` only for that agent. App events are published once per event
+  to `org:{id}:events` / `org:{id}:agent:{id}` through Supabase's broadcast API; presence also counts sessions
+  with a recent panel heartbeat (`agent_sessions.last_seen_at`).
+- Reports can read from a replica (`DATABASE_URL_REPORTS`, configuration only).
+
+### 19.3 AI copilot (32)
+- `copilot_suggestions` (**partitioned**, 12 months): reply suggestions, drafts, next-best-action, summaries,
+  rewrite / translate shown to an agent, with outcome (`accepted | edited | dismissed | expired`), final text,
+  edit distance, latency and `ai_call_id` → adoption and quality metrics.
+- `conversations.handoff_summary` (+at) for the agent who receives a transfer; `summary` (+at) kept up to date.
+- Supervisor assistant: `assistant_threads` / `assistant_messages` (tool calls over the report APIs — no free SQL —
+  and chart data).
+- `reporting.daily_copilot` (shown / accepted / edited / dismissed / latency per agent and kind); AI purposes
+  `copilot` and `assistant`.
+
+## 20. Go-live hardening: integration diagnostics (migration 33)
+
+- `system_checks`: latest result per read-only check against the real services, platform-wide (`organization_id`
+  null: server variables) or per company (its connections): area (`meta | google_ads | hubspot | salesforce |
+  stripe | email | supabase | sso | push | voice | infra`), key (e.g. `meta.token_scopes`, `smtp.login`,
+  `supabase.pooler_listen`), status (`pass | warn | fail | skipped`), plain-language detail with the fix, data
+  without secrets, latency, run.
+- `system_check_runs`: history of runs (manual, CLI, deploy, schedule) with app version and pass/warn/fail counts
+  to compare before and after a deploy.
+
 ## 11. Feature log (data-model changes)
 
 | Date | Feature | Model change |
@@ -575,6 +631,8 @@ Closes the Atom gap backlog (`docs/roadmap-atom-gaps.md`).
 | 2026-10-07 | Flow engine | No schema changes: uses `flows`, `flow_versions`, `flow_runs` (`context` = variables + resumable execution stack), `flow_run_steps`. Shared block catalog `blocks.json` |
 | 2026-10-08 | Phase 2 (model) | Attribution, CRM, voice and SaaS: migrations 11–14 (section 10) |
 | 2026-10-11 | Public API `/v1` + advisor PWA | Migration 20b: origin `api` (actor and sources) |
+| 2026-10-15 | Go-live diagnostics | Migration 33 (§20): `system_checks`, `system_check_runs` |
+| 2026-10-14 | Atom gaps, scale-out, AI copilot | Migrations 30–32 (§19): email channel + `email_threads`, `call_permissions`, `wa_widgets`; voice node role, `calls.media_node_id`, `jobs` queue + `jobs_claim`; `copilot_suggestions` (partitioned), handoff/conversation summaries, assistant threads/messages, `reporting.daily_copilot` |
 | 2026-10-13 | Contact center, supervision, productivity, security | Migrations 26–29 (§18): agent statuses + status log + sessions, business hours per group + holidays, group routing rules, client owner, SLA automations + runs, conversation assignment fields; supervisor group role, `reporting.daily_service`, `daily_agent_status`; quick replies v2, `notifications` (partitioned), follow-up reminders, client-list campaigns; roles & permissions, SSO, 2FA, password policy/history/resets, `auth_events` (partitioned) |
 | 2026-10-12 | Agent config, stages, recovery, security, inbound webhooks | Migration 25 (§17): `ai_agents` ad context / source rules / cost optimization / security / recovery / time zone / fields; `pipeline_stages`, `deal_stage_events`; richer `typifications`; `inbound_webhooks`, `inbound_webhook_runs` (partitioned) |
 | 2026-10-12 | Ad-level tracking | Migration 24 (§16): creative/post on `attributions` and touches; `ad_entities` creative + story id; `contacts.first_source_*`/`last_source_*` (trigger); `ad_spend_daily`; `reporting.daily_ads` |
