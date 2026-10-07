@@ -1,0 +1,46 @@
+# Producción en una instancia AWS EC2: Caddy (HTTPS automático) + backend + frontend.
+# La base de datos, Storage, Realtime, Vault y cron viven en Supabase (no hay Postgres aquí).
+#
+#   cd deploy && cp .env.example .env   # completar
+#   docker compose up -d --build
+services:
+  backend:
+    build: ../backend
+    env_file: .env
+    environment:
+      CORS_ORIGINS: https://${DOMAIN}
+    restart: unless-stopped
+    expose: ["8000"]
+    logging: &logging
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  frontend:
+    build:
+      context: ../frontend
+      args:
+        NEXT_PUBLIC_API_URL: https://${DOMAIN}
+        NEXT_PUBLIC_SUPABASE_URL: ${SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY}
+    restart: unless-stopped
+    expose: ["3000"]
+    depends_on: [backend]
+    logging: *logging
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [backend, frontend]
+    logging: *logging
+
+volumes:
+  caddy_data:
+  caddy_config:

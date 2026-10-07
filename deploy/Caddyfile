@@ -1,0 +1,31 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# API, WebSocket en tiempo real, webhook de Meta y salud → backend
+	@backend path /api/* /ws /webhooks/* /health /docs /openapi.json
+	handle @backend {
+		reverse_proxy backend:8000
+	}
+
+	# Todo lo demás → panel (Next.js)
+	handle {
+		reverse_proxy frontend:3000
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	# Subidas de archivos (recursos, catálogo, adjuntos) hasta 25 MB
+	request_body {
+		max_size 25MB
+	}
+}

@@ -1,0 +1,14 @@
+/* La bandeja ocupa todo el alto disponible: cancela el padding de .content */
+.wrap {
+  margin: -20px -24px -40px;
+  height: calc(100vh - 53px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+@media (max-width: 860px) {
+  .wrap {
+    margin: -16px;
+  }
+}

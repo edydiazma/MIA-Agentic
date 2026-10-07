@@ -1,0 +1,315 @@
+"""Operaciones de dominio compartidas (webhook, agente IA, automatizaciones, bandeja, flujos).
+
+La base mantiene por triggers: contadores y último mensaje de la conversación, primera respuesta,
+eventos (conversation_events), cierre/reapertura y expiración de sugerencias. Este módulo NO duplica esa lógica:
+escribe el cambio, indica el actor con db.set_actor() y relee la conversación.
+"""
+
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import set_actor
+from app.fields import custom_values
+from app.models import (
+    Agent,
+    AgentGroup,
+    Alert,
+    Channel,
+    Contact,
+    Conversation,
+    ConversationTag,
+    Message,
+    Tag,
+    Typification,
+)
+from app.realtime import hub
+from app.schemas import AgentOut, ContactOut, ConversationOut, GroupOut, MessageOut
+from app.secrets_vault import get_secret
+from app.settings_store import get_setting
+from app.whatsapp import WhatsAppClient
+
+SESSION_WINDOW = timedelta(hours=24)
+
+
+# --- Serialización (contrato estable de la API) ---------------------------------
+def contact_out(c: Contact) -> dict:
+    return ContactOut(
+        id=c.id, wa_id=c.wa_id, name=c.name, email=c.email, notes=c.notes, stage=c.stage,
+        tags=sorted(link.tag.name for link in c.tag_links), custom_fields=custom_values(c), memory=c.memory,
+        memory_updated_at=c.memory_updated_at, blocked=c.blocked, blocked_reason=c.blocked_reason,
+        blocked_at=c.blocked_at, marketing_opt_out=c.marketing_opt_out, created_at=c.created_at,
+    ).model_dump(mode="json")
+
+
+def suggestions_out(conv: Conversation) -> dict | None:
+    out: dict = {}
+    for s in conv.pending_suggestions:
+        if s.kind == "tag":
+            out.setdefault("tags", []).append(s.value)
+        elif s.kind == "typification":
+            out["typification"] = {"value": s.value, "confidence": s.confidence}
+        elif s.kind == "group":
+            out["group"] = {"value": s.value.get("name"), "group_id": s.value.get("group_id"),
+                            "confidence": s.confidence}
+        elif s.kind == "field":
+            out.setdefault("fields", []).append({"key": s.target, "label": s.value.get("label"),
+                                                 "value": s.value.get("value"), "confidence": s.confidence,
+                                                 "evidence": s.evidence or ""})
+    return out or None
+
+
+def conversation_out(c: Conversation) -> dict:
+    return ConversationOut(
+        id=c.id, status=c.status, contact=contact_out(c.contact), channel_id=c.channel_id, ai_agent_id=c.ai_agent_id,
+        assigned_agent=AgentOut.model_validate(c.assigned_agent) if c.assigned_agent else None,
+        group=GroupOut.model_validate(c.group) if c.group else None,
+        handoff_reason=c.handoff_reason, handoff_at=c.handoff_at, first_response_at=c.first_response_at,
+        typification=c.typification.name if c.typification else None,
+        tags=sorted(link.tag.name for link in c.tag_links),
+        ai_summary=c.ai_summary, ai_sentiment=c.ai_sentiment,
+        ai_typification=c.ai_typification.name if c.ai_typification else None,
+        ai_suggestions=suggestions_out(c), ai_classified_at=c.ai_classified_at, closed_at=c.closed_at,
+        ad_source_type=c.ad_source_type, ad_headline=c.ad_headline, unread_count=c.unread_count,
+        message_count=c.message_count, last_message_at=c.last_message_at, last_inbound_at=c.last_inbound_at,
+        last_message_preview=c.last_message_preview, created_at=c.created_at,
+    ).model_dump(mode="json")
+
+
+def message_out(m: Message) -> dict:
+    return MessageOut(
+        id=m.id, conversation_id=m.conversation_id, direction=m.direction, sender_type=m.sender_type,
+        sender_agent_id=m.sender_agent_id, type=m.type, text=m.text, media_mime=m.media_mime,
+        media_filename=m.media_filename, transcript=m.transcript, template_name=m.template_name,
+        has_media=bool(m.media_path), status=m.status, error=m.error, created_at=m.created_at,
+    ).model_dump(mode="json")
+
+
+# --- Utilidades -----------------------------------------------------------------
+def as_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def within_session_window(conv: Conversation) -> bool:
+    """WhatsApp solo permite mensajes libres hasta 24 h después del último mensaje del cliente."""
+    last = as_utc(conv.last_inbound_at)
+    return bool(last and datetime.now(UTC) - last < SESSION_WINDOW)
+
+
+async def wa_client(session: AsyncSession, channel: Channel) -> WhatsAppClient:
+    """Cliente de WhatsApp del canal; el token propio del canal vive en Vault."""
+    return WhatsAppClient(channel.phone_number_id, await get_secret(session, channel.access_token_secret_id))
+
+
+async def get_message(session: AsyncSession, message_id: int) -> Message | None:
+    """Tabla particionada (PK compuesta): se busca por id."""
+    return await session.scalar(select(Message).where(Message.id == message_id))
+
+
+async def get_conversation(session: AsyncSession, conv_id: int, org: int) -> Conversation | None:
+    conv = await session.get(Conversation, conv_id)
+    return conv if conv and conv.organization_id == org else None
+
+
+async def reload(session: AsyncSession, conv: Conversation) -> Conversation:
+    """Relee la conversación y sus relaciones (los triggers cambian columnas en la base)."""
+    await session.refresh(conv)
+    for rel in ("contact", "tag_links", "pending_suggestions", "group", "assigned_agent", "typification",
+                "ai_typification"):
+        await session.refresh(conv, [rel])
+    await session.refresh(conv.contact, ["field_values", "tag_links"])
+    return conv
+
+
+async def broadcast_conversation(conv: Conversation, event: str = "conversation.updated") -> None:
+    data = conversation_out(conv)
+    await hub.broadcast("conversation.updated", data)
+    if event != "conversation.updated":
+        await hub.broadcast(event, data)
+
+
+async def commit_and_broadcast(session: AsyncSession, conv: Conversation, event: str = "conversation.updated") -> None:
+    await session.commit()
+    await reload(session, conv)
+    await broadcast_conversation(conv, event)
+
+
+# --- Contactos y conversaciones -------------------------------------------------
+async def get_or_create_contact(session: AsyncSession, org: int, wa_id: str,
+                                profile_name: str | None = None) -> tuple[Contact, bool]:
+    contact = await session.scalar(select(Contact).where(Contact.organization_id == org, Contact.wa_id == wa_id))
+    if contact:
+        if profile_name and not contact.name:
+            contact.name = profile_name
+        return contact, False
+    contact = Contact(organization_id=org, wa_id=wa_id, name=profile_name)
+    session.add(contact)
+    await session.flush()
+    await session.refresh(contact, ["field_values", "tag_links"])
+    return contact, True
+
+
+async def get_or_create_conversation(session: AsyncSession, channel: Channel, contact: Contact,
+                                     reopen: bool = True) -> Conversation:
+    conv = await session.scalar(
+        select(Conversation).where(Conversation.contact_id == contact.id, Conversation.channel_id == channel.id)
+        .order_by(Conversation.id.desc()).limit(1))
+    if not conv:
+        conv = Conversation(organization_id=channel.organization_id, contact_id=contact.id, channel_id=channel.id,
+                            ai_agent_id=channel.default_ai_agent_id, status="bot")
+        session.add(conv)
+        await session.flush()
+        await reload(session, conv)
+    elif conv.status == "closed" and reopen:
+        # El trigger de estado limpia closed_at, tipificación, handoff y cuenta la reapertura.
+        conv.status, conv.assigned_agent_id = "bot", None
+        conv.ai_agent_id = conv.ai_agent_id or channel.default_ai_agent_id
+        await session.flush()
+        await reload(session, conv)
+    return conv
+
+
+async def record_message(session: AsyncSession, conv: Conversation, msg: Message) -> Message:
+    """Inserta el mensaje; los contadores, la vista previa y la primera respuesta los actualiza el trigger."""
+    msg.organization_id = conv.organization_id
+    msg.conversation_id = conv.id
+    session.add(msg)
+    await session.commit()
+    await reload(session, conv)
+    await hub.broadcast("message.new", message_out(msg))
+    await broadcast_conversation(conv)
+    return msg
+
+
+async def send_text(session: AsyncSession, conv: Conversation, text: str, sender_type: str,
+                    agent_id: int | None = None, ai_agent_id: int | None = None) -> list[Message]:
+    """Envía texto por WhatsApp (partiéndolo si es largo) y lo registra."""
+    msg = Message(direction="out", sender_type=sender_type, sender_agent_id=agent_id, ai_agent_id=ai_agent_id,
+                  type="text", text=text)
+    try:
+        ids = await (await wa_client(session, conv.channel)).send_text(conv.contact.wa_id, text)
+        msg.wa_message_id, msg.status = ids[0], "sent"
+    except Exception as e:
+        msg.status, msg.error = "failed", str(e)[:2000]
+    return [await record_message(session, conv, msg)]
+
+
+async def system_note(session: AsyncSession, conv: Conversation, text: str) -> None:
+    """Nota interna visible en el chat (no se envía al cliente)."""
+    session.add(Message(organization_id=conv.organization_id, conversation_id=conv.id, direction="out",
+                        sender_type="system", type="text", text=text, status="sent"))
+
+
+# --- Etiquetas y tipificaciones -------------------------------------------------
+async def tag_by_name(session: AsyncSession, org: int, name: str, create: bool = True) -> Tag | None:
+    name = name.strip().lower()
+    if not name:
+        return None
+    tag = await session.scalar(select(Tag).where(Tag.organization_id == org, Tag.name == name))
+    if not tag and create:
+        tag = Tag(organization_id=org, name=name)
+        session.add(tag)
+        await session.flush()
+    return tag
+
+
+async def set_conversation_tags(session: AsyncSession, conv: Conversation, names: list[str], source: str,
+                                agent_id: int | None = None, confidence: dict[str, float] | None = None,
+                                replace: bool = True) -> list[str]:
+    """Agrega (y si replace, quita) etiquetas. Devuelve las agregadas."""
+    current = {link.tag.name: link for link in conv.tag_links}
+    wanted = {n.strip().lower() for n in names if n and n.strip()}
+    added = []
+    for name in wanted - current.keys():
+        tag = await tag_by_name(session, conv.organization_id, name)
+        session.add(ConversationTag(conversation_id=conv.id, tag_id=tag.id, source=source, created_by=agent_id,
+                                    confidence=(confidence or {}).get(name)))
+        added.append(name)
+    if replace:
+        for name in current.keys() - wanted:
+            await session.delete(current[name])
+    return added
+
+
+async def typification_by_name(session: AsyncSession, org: int, name: str | None) -> Typification | None:
+    if not name:
+        return None
+    return await session.scalar(select(Typification).where(
+        Typification.organization_id == org, Typification.name == name))
+
+
+# --- Asignación y transferencia -------------------------------------------------
+async def pick_agent(session: AsyncSession, org: int, group_id: int | None) -> int | None:
+    """Asesor conectado y disponible con menos conversaciones abiertas (del grupo, si hay)."""
+    online = hub.online_agent_ids()
+    if not online:
+        return None
+    stmt = select(Agent.id).where(Agent.organization_id == org, Agent.is_active, Agent.availability == "available",
+                                  Agent.id.in_(online))
+    if group_id:
+        stmt = stmt.join(AgentGroup, AgentGroup.agent_id == Agent.id).where(AgentGroup.group_id == group_id)
+    candidates = list((await session.scalars(stmt)).all())
+    if not candidates:
+        return None
+    load = dict((await session.execute(
+        select(Conversation.assigned_agent_id, func.count())
+        .where(Conversation.status == "human", Conversation.assigned_agent_id.in_(candidates))
+        .group_by(Conversation.assigned_agent_id))).all())
+    return min(candidates, key=lambda a: (load.get(a, 0), a))
+
+
+async def handoff(session: AsyncSession, conv: Conversation, reason: str, group_id: int | None = None,
+                  actor: str = "bot") -> None:
+    """Pasa de bot a humano, enruta con IA si hace falta, asigna y avisa."""
+    await set_actor(session, actor)
+    conv.status, conv.handoff_reason = "human", reason
+    conv.handoff_at = datetime.now(UTC)
+    if group_id:
+        conv.group_id = group_id
+    await session.commit()
+    if not group_id:
+        from app.classifier import route_on_handoff  # import diferido: classifier usa este módulo
+
+        await route_on_handoff(session, conv)
+    if (await get_setting(session, "conversations", conv.organization_id))["auto_assign"] and not conv.assigned_agent_id:
+        await set_actor(session, "system")
+        conv.assigned_agent_id = await pick_agent(session, conv.organization_id, conv.group_id)
+    await commit_and_broadcast(session, conv, "conversation.handoff")
+
+    from app.automations import after_handoff  # evita import circular
+
+    await after_handoff(session, conv)
+    if actor != "flow":  # un flujo que transfiere no vuelve a disparar flujos de transferencia
+        from app.flows.engine import on_event
+
+        await on_event(conv.id, "handoff")
+
+
+async def close(session: AsyncSession, conv: Conversation, typification: Typification | None,
+                actor: str = "agent", agent_id: int | None = None) -> None:
+    """Cierra; el trigger fija closed_at, limpia no leídos y expira sugerencias."""
+    await set_actor(session, actor, agent_id)
+    conv.status = "closed"
+    conv.typification_id = typification.id if typification else conv.typification_id
+    await commit_and_broadcast(session, conv, "conversation.closed")
+
+    from app.classifier import run_in_background
+
+    if (await get_setting(session, "classifier", conv.organization_id))["classify_on_close"]:
+        await run_in_background(conv.id, "close")
+    if actor != "flow":
+        from app.flows.engine import on_event
+
+        await on_event(conv.id, "close")
+
+
+# --- Alertas --------------------------------------------------------------------
+async def create_alert(session: AsyncSession, org: int, **fields) -> Alert:
+    alert = Alert(organization_id=org, **fields)
+    session.add(alert)
+    await session.commit()
+    await hub.broadcast("alert.new", {"id": alert.id, "title": alert.title, "severity": alert.severity})
+    return alert
